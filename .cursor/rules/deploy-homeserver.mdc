@@ -1,0 +1,19 @@
+---
+description: Deploy RBWiki code to the homeserver after code changes
+alwaysApply: true
+---
+
+# Deploy to the homeserver
+
+After changing RBWiki code, deploy it before finishing. The user expects every code change on the homeserver, not only on localhost.
+
+Run from the repo root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\deploy.ps1
+```
+
+- Leave server notes, uploads, and the password in place. Do not pass `-IncludeData` unless the user explicitly asks to replace that data.
+- The script restarts the `rbwiki` screen session on 192.168.31.11 and checks `http://127.0.0.1:3010/rbWiki` for 200.
+- Do not commit or push git unless the user asks.
+- Skip the deploy when the turn did not change app code.

@@ -121,6 +121,41 @@ export async function ensureShareToken(id) {
     return page;
 }
 
+function swapUploadRef(html, fromName, toName) {
+    const from = `/uploads/${fromName}`;
+    const to = `/uploads/${toName}`;
+    const text = String(html || '');
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        const at = text.indexOf(from, i);
+        if (at < 0) {
+            out += text.slice(i);
+            break;
+        }
+        const next = text[at + from.length] || '';
+        out += text.slice(i, at);
+        out += /[A-Za-z0-9._-]/.test(next) ? from : to;
+        i = at + from.length;
+    }
+    return out;
+}
+
+export async function rewriteUploadRefs(fromName, toName) {
+    if (!fromName || !toName || fromName === toName) return 0;
+    const pages = await listPages({ deleted: 'all' });
+    let changed = 0;
+    for (const page of pages) {
+        const content = swapUploadRef(page.content, fromName, toName);
+        if (content === page.content) continue;
+        page.content = content;
+        page.updatedAt = Date.now();
+        await atomicWrite(pagePath(page.id), page);
+        changed += 1;
+    }
+    return changed;
+}
+
 export async function findByShareToken(token) {
     if (!token || token.length < 12) return null;
     const pages = await listPages();

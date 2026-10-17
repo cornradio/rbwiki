@@ -334,7 +334,7 @@ async function flushSave() {
     const page = pages.find((p) => p.id === currentId);
     if (!page || !canWrite || trashMode) return;
     const title = titleEl.value;
-    const content = editorEl.innerHTML;
+    const content = stripUploadCache(editorEl.innerHTML);
     if (title === page.title && content === (page.content || '')) return;
     statusEl.textContent = '保存中…';
     const res = await api('/api/pages/' + page.id, {
@@ -500,14 +500,34 @@ function foldAll() {
     renderTree();
 }
 
+function currentHomePath() {
+    return decodeURIComponent(location.pathname).replace(/^\/+|\/+$/g, '') || 'rbWiki';
+}
+
+function randomHomePath() {
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 function openSettings() {
     document.getElementById('settings').classList.remove('hidden');
-    document.getElementById('settings-msg').textContent = '';
-    refreshAuth().then((data) => {
+    document.getElementById('home-path').value = currentHomePath();
+    return refreshAuth().then((data) => {
+        const locked = !data.canWrite;
+        document.getElementById('settings-tools').classList.toggle('hidden', locked);
+        document.getElementById('pw-login').classList.toggle('hidden', !data.hasPassword || data.canWrite);
+        document.getElementById('pw-set').classList.toggle('hidden', locked);
+        document.getElementById('pw-logout').classList.toggle('hidden', !data.hasPassword || locked);
         document.getElementById('auth-hint').textContent = data.hasPassword
-            ? (data.canWrite ? '已解锁，可以修改。锁定后别人只能看。' : '已设置密码。输入后才能修改、删除、导入导出。')
+            ? (data.canWrite ? '已解锁。' : '输入密码后才能改设置。')
             : '还没有密码。设一个之后，不输入密码就不能改。';
+        return data;
     });
+}
+
+function closeSettings() {
+    document.getElementById('settings').classList.add('hidden');
 }
 
 document.getElementById('add-root').addEventListener('click', () => createPage(null));
@@ -538,18 +558,115 @@ document.getElementById('trash-page').addEventListener('click', async () => {
     statusEl.textContent = '已放入回收站。搜索下面可以切过去。';
 });
 
-async function setTrashMode(on) {
-    if (trashMode === on) return;
-    trashMode = on;
-    document.getElementById('mode-lib').classList.toggle('on', !on);
-    document.getElementById('mode-trash').classList.toggle('on', on);
-    if (on) trashFolded = false;
+let viewMode = 'lib';
+let fileRows = [];
+
+async function setView(mode) {
+    if (viewMode === mode && mode !== 'files') return;
+    viewMode = mode;
+    trashMode = mode === 'trash';
+    document.getElementById('mode-lib').classList.toggle('on', mode === 'lib');
+    document.getElementById('mode-trash').classList.toggle('on', mode === 'trash');
+    document.getElementById('mode-files').classList.toggle('on', mode === 'files');
+    document.body.classList.toggle('files-mode', mode === 'files');
+    document.getElementById('files').classList.toggle('hidden', mode !== 'files');
+    applyLock();
+    if (mode === 'files') {
+        await loadFiles();
+        return;
+    }
+    if (mode === 'trash') trashFolded = false;
     currentId = null;
     await load(null);
 }
 
-document.getElementById('mode-lib').addEventListener('click', () => setTrashMode(false));
-document.getElementById('mode-trash').addEventListener('click', () => setTrashMode(true));
+function visibleFiles() {
+    const zeroOnly = document.getElementById('files-zero').checked;
+    return fileRows.filter((row) => !zeroOnly || row.refs === 0);
+}
+
+function isImageFile(name) {
+    return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(name || '');
+}
+
+function renderFiles() {
+    const rows = visibleFiles();
+    const body = document.getElementById('files-body');
+    const zeroOnly = document.getElementById('files-zero').checked;
+    const del = document.getElementById('files-delete-zero');
+    del.classList.toggle('hidden', !zeroOnly);
+    del.disabled = rows.length === 0;
+    if (!fileRows.length) {
+        body.innerHTML = '';
+        document.getElementById('files-msg').textContent = '还没有附件。';
+        return;
+    }
+    document.getElementById('files-msg').textContent = zeroOnly
+        ? (rows.length ? rows.length + ' 个没有被引用，可以一次删掉。' : '没有零引用的附件。')
+        : '共 ' + fileRows.length + ' 个附件。引用算上回收站里的页面。';
+    body.innerHTML = rows.map((row) => {
+        const thumb = isImageFile(row.name)
+            ? `<button type="button" class="file-thumb" data-preview="${escapeHtml(row.url)}" title="查看大图"><img src="${escapeHtml(row.url)}" alt=""></button>`
+            : '';
+        return `
+        <tr class="${row.refs === 0 ? 'zero' : ''}" data-name="${escapeHtml(row.name)}">
+            <td class="thumb">${thumb}</td>
+            <td class="name"><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener">${escapeHtml(row.label || row.name)}</a></td>
+            <td class="num">${escapeHtml(formatSize(row.size))}</td>
+            <td class="num refs">${row.refs}</td>
+            <td class="num"><button type="button" class="danger" data-del="${escapeHtml(row.name)}">删除</button></td>
+        </tr>`;
+    }).join('');
+}
+
+async function loadFiles() {
+    const res = await fetch('/api/uploads');
+    if (res.status === 401) {
+        fileRows = [];
+        document.getElementById('files-body').innerHTML = '';
+        document.getElementById('files-delete-zero').classList.add('hidden');
+        document.getElementById('files-msg').textContent = '先在设置里解锁，才能查看和删除附件。';
+        return;
+    }
+    fileRows = await res.json();
+    renderFiles();
+}
+
+async function deleteUploadNames(names, message) {
+    if (!names.length) return;
+    if (!confirm(message)) return;
+    const res = await api('/api/uploads/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ names })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return;
+    statusEl.textContent = '已删除 ' + (data.count || 0) + ' 个附件';
+    await loadFiles();
+}
+
+document.getElementById('mode-lib').addEventListener('click', () => setView('lib'));
+document.getElementById('mode-trash').addEventListener('click', () => setView('trash'));
+document.getElementById('mode-files').addEventListener('click', () => setView('files'));
+document.getElementById('files-zero').addEventListener('change', renderFiles);
+document.getElementById('files-delete-zero').addEventListener('click', () => {
+    const names = visibleFiles().map((row) => row.name);
+    deleteUploadNames(names, '删除这 ' + names.length + ' 个没有被引用的附件？文件会从服务器去掉。');
+});
+document.getElementById('files-body').addEventListener('click', (event) => {
+    const preview = event.target.closest('[data-preview]');
+    if (preview) {
+        showLightbox(preview.dataset.preview);
+        return;
+    }
+    const btn = event.target.closest('[data-del]');
+    if (!btn) return;
+    const row = fileRows.find((item) => item.name === btn.dataset.del);
+    if (!row) return;
+    const warn = row.refs > 0 ? '它还被引用了 ' + row.refs + ' 次。' : '';
+    deleteUploadNames([row.name], '删除「' + (row.label || row.name) + '」？' + warn + '文件会从服务器去掉。');
+});
 
 document.getElementById('locate').addEventListener('click', locateCurrent);
 document.getElementById('fold-all').addEventListener('click', foldAll);
@@ -563,9 +680,31 @@ document.querySelectorAll('.theme-switch, .look').forEach((box) => {
     });
 });
 
-document.getElementById('settings-btn').addEventListener('click', openSettings);
-document.getElementById('settings-close').addEventListener('click', () => {
-    document.getElementById('settings').classList.add('hidden');
+document.getElementById('settings-btn').addEventListener('click', () => {
+    document.getElementById('settings-msg').textContent = '';
+    openSettings();
+});
+document.getElementById('settings-close').addEventListener('click', closeSettings);
+document.getElementById('settings').addEventListener('click', (event) => {
+    if (event.target.id === 'settings') closeSettings();
+});
+document.getElementById('home-random').addEventListener('click', () => {
+    document.getElementById('home-path').value = randomHomePath();
+});
+document.getElementById('home-save').addEventListener('click', async () => {
+    const msg = document.getElementById('settings-msg');
+    const pathName = document.getElementById('home-path').value.trim();
+    const res = await api('/api/auth/home', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: pathName })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        msg.textContent = data.error || '没有保存';
+        return;
+    }
+    location.replace('/' + data.path);
 });
 
 document.getElementById('pw-login').addEventListener('click', async () => {
@@ -819,14 +958,154 @@ function closeLightbox() {
     box.innerHTML = '';
 }
 
+function uploadNameFromSrc(src) {
+    try {
+        const url = new URL(src, location.origin);
+        if (url.origin !== location.origin) return '';
+        const match = url.pathname.match(/^\/uploads\/([^/]+)$/);
+        return match ? decodeURIComponent(match[1]) : '';
+    } catch (e) {
+        return '';
+    }
+}
+
+function swapUploadRef(html, fromName, toName) {
+    const from = '/uploads/' + fromName;
+    const to = '/uploads/' + toName;
+    const text = String(html || '');
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        const at = text.indexOf(from, i);
+        if (at < 0) {
+            out += text.slice(i);
+            break;
+        }
+        const next = text[at + from.length] || '';
+        out += text.slice(i, at);
+        out += /[A-Za-z0-9._-]/.test(next) ? from : to;
+        i = at + from.length;
+    }
+    return out;
+}
+
+function retargetUpload(fromName, toName) {
+    const from = '/uploads/' + fromName;
+    const to = '/uploads/' + toName;
+    const shown = to + '?v=' + Date.now();
+    const nextAttr = (value) => {
+        const clean = String(value || '').split('?')[0];
+        if (clean !== from && clean !== to) return '';
+        return shown;
+    };
+    editorEl.querySelectorAll('img, a').forEach((node) => {
+        const attr = node.tagName === 'A' ? 'href' : 'src';
+        const next = nextAttr(node.getAttribute(attr));
+        if (next) node.setAttribute(attr, next);
+    });
+    if (fromName === toName) return;
+    pages.forEach((page) => {
+        if (!page.content || !page.content.includes(from)) return;
+        page.content = swapUploadRef(page.content, fromName, toName);
+    });
+}
+
+function stripUploadCache(html) {
+    return String(html || '').replace(/(\/uploads\/[^"'?\s]+)\?v=\d+/g, '$1');
+}
+
+async function readShownSize(src, img, meta) {
+    let bytes = null;
+    try {
+        const res = await fetch(src, { method: 'HEAD', cache: 'no-store' });
+        const len = Number(res.headers.get('content-length'));
+        if (res.ok && len) bytes = len;
+    } catch (e) {}
+    if (bytes == null) {
+        try {
+            const res = await fetch(src, { cache: 'no-store' });
+            if (res.ok) bytes = (await res.blob()).size;
+        } catch (e) {}
+    }
+    const paint = () => {
+        const parts = [];
+        if (bytes != null) parts.push(formatSize(bytes));
+        if (img.naturalWidth) parts.push(img.naturalWidth + '×' + img.naturalHeight);
+        meta.textContent = parts.join(' · ') || '大小未知';
+    };
+    if (img.complete) paint();
+    else img.addEventListener('load', paint, { once: true });
+    return bytes;
+}
+
+async function compressShownImage(img, meta, btn) {
+    const name = uploadNameFromSrc(img.src);
+    if (!name) return;
+    if (!canWrite) {
+        statusEl.textContent = '先在设置里解锁';
+        return;
+    }
+    btn.disabled = true;
+    btn.textContent = '正在压缩…';
+    try {
+        const res = await fetch(img.src, { cache: 'no-store' });
+        if (!res.ok) throw new Error('fetch');
+        const blob = await res.blob();
+        const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
+        const compressed = await compressImage(file);
+        if (compressed.size >= blob.size) {
+            meta.textContent = formatSize(blob.size) + ' · 压完是 ' + formatSize(compressed.size) + '，没有更小，原图还在';
+            btn.textContent = '压缩图片';
+            btn.disabled = false;
+            return;
+        }
+        const body = new FormData();
+        body.append('file', compressed, compressed.name);
+        const put = await api('/api/uploads/' + encodeURIComponent(name), { method: 'PUT', body });
+        const data = await put.json().catch(() => ({}));
+        if (!put.ok) {
+            meta.textContent = data.error || '没有替换成功';
+            btn.textContent = '压缩图片';
+            btn.disabled = false;
+            return;
+        }
+        retargetUpload(name, data.name);
+        img.src = data.url + '?v=' + Date.now();
+        meta.textContent = formatSize(blob.size) + ' → ' + formatSize(data.size);
+        if (img.naturalWidth) meta.textContent += ' · ' + img.naturalWidth + '×' + img.naturalHeight;
+        img.addEventListener('load', () => {
+            meta.textContent = formatSize(blob.size) + ' → ' + formatSize(data.size);
+            if (img.naturalWidth) meta.textContent += ' · ' + img.naturalWidth + '×' + img.naturalHeight;
+        }, { once: true });
+        statusEl.textContent = '已压缩并替换原图';
+        if (viewMode === 'files') loadFiles();
+    } catch (e) {
+        meta.textContent = '压缩失败';
+    }
+    btn.textContent = '压缩图片';
+    btn.disabled = false;
+}
+
 function showLightbox(src) {
     const box = document.getElementById('lightbox');
     box.innerHTML = '';
     const img = document.createElement('img');
     img.src = src;
     img.alt = '';
-    box.appendChild(img);
+    const bar = document.createElement('div');
+    bar.className = 'lightbox-bar';
+    bar.addEventListener('click', (event) => event.stopPropagation());
+    const meta = document.createElement('span');
+    meta.textContent = '大小读取中…';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = '压缩图片';
+    if (!uploadNameFromSrc(src)) btn.classList.add('hidden');
+    btn.addEventListener('click', () => compressShownImage(img, meta, btn));
+    bar.append(meta, btn);
+    box.append(img, bar);
     box.classList.remove('hidden');
+    readShownSize(src, img, meta);
 }
 
 function showFloatMenu(x, y, items) {
@@ -1022,16 +1301,126 @@ function imageHtml(url) {
     return `<img src="${escapeHtml(url)}" alt=""${width}>`;
 }
 
+function formatSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return n + ' B';
+    const kb = n / 1024;
+    if (kb < 1024) return (kb < 10 ? kb.toFixed(1) : Math.round(kb)) + ' KB';
+    const mb = kb / 1024;
+    if (mb < 1024) return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+    return (mb / 1024).toFixed(2) + ' GB';
+}
+
+let uploadJob = { index: 1, total: 1, name: '' };
+
+function showUploadProgress(loaded, total) {
+    const box = document.getElementById('upload-progress');
+    box.classList.remove('hidden');
+    const pct = total ? Math.min(100, Math.round(loaded / total * 100)) : 0;
+    document.getElementById('upload-progress-bar').style.width = pct + '%';
+    const which = uploadJob.total > 1 ? uploadJob.index + '/' + uploadJob.total + ' ' : '';
+    document.getElementById('upload-progress-label').textContent = '正在上传 ' + which + uploadJob.name + ' ' + pct + '%';
+}
+
+function hideUploadProgress() {
+    const box = document.getElementById('upload-progress');
+    box.classList.add('hidden');
+    document.getElementById('upload-progress-bar').style.width = '0';
+    document.getElementById('upload-progress-label').textContent = '';
+}
+
+function uploadBlob(file) {
+    uploadJob.name = file.name || uploadJob.name || '文件';
+    return new Promise((resolve) => {
+        const body = new FormData();
+        body.append('file', file, file.name || 'file');
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload');
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) showUploadProgress(event.loaded, event.total);
+        };
+        xhr.onload = () => {
+            let data = {};
+            try { data = JSON.parse(xhr.responseText); } catch (e) {}
+            if (xhr.status < 200 || xhr.status >= 300 || !data.url) {
+                statusEl.textContent = data.error || '上传失败';
+                resolve(null);
+                return;
+            }
+            showUploadProgress(1, 1);
+            resolve(data);
+        };
+        xhr.onerror = () => {
+            statusEl.textContent = '上传失败';
+            resolve(null);
+        };
+        xhr.send(body);
+    });
+}
+
 async function insertImageFile(file) {
     const prepared = await prepareImage(file);
-    const body = new FormData();
-    body.append('image', prepared);
-    const res = await api('/api/upload', { method: 'POST', body });
-    const data = await res.json();
-    if (!data.url) return;
+    const data = await uploadBlob(prepared);
+    if (!data) return;
     restoreRange();
     document.execCommand('insertHTML', false, imageHtml(data.url));
     scheduleSave();
+    statusEl.textContent = '已插入图片';
+}
+
+function looksLikeImage(file) {
+    if ((file.type || '').startsWith('image/')) return true;
+    return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name || '');
+}
+
+async function insertAnyFile(file) {
+    if (looksLikeImage(file)) return insertImageFile(file);
+    const data = await uploadBlob(file);
+    if (!data) return;
+    restoreRange();
+    const name = data.name || file.name || '文件';
+    const label = name + ' (' + formatSize(data.size || file.size) + ')';
+    document.execCommand('insertHTML', false, `<a class="file-link" href="${escapeHtml(data.url)}">${escapeHtml(label)}</a>`);
+    scheduleSave();
+    statusEl.textContent = '已插入 ' + name;
+}
+
+async function insertFiles(files) {
+    uploadJob.total = files.length || 1;
+    try {
+        for (let i = 0; i < files.length; i++) {
+            uploadJob.index = i + 1;
+            uploadJob.name = files[i].name || '文件';
+            await insertAnyFile(files[i]);
+        }
+    } finally {
+        hideUploadProgress();
+    }
+}
+
+async function deleteUploaded(url) {
+    const part = String(url || '').split('/uploads/')[1] || '';
+    const name = decodeURIComponent(part.split(/[?#]/)[0]);
+    if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return false;
+    const res = await api('/api/uploads/' + encodeURIComponent(name), { method: 'DELETE' });
+    return res.ok;
+}
+
+function filesFromClipboard(data) {
+    if (!data) return [];
+    const files = [];
+    if (data.files && data.files.length) {
+        for (const file of data.files) if (file) files.push(file);
+    }
+    if (!files.length && data.items) {
+        for (const item of data.items) {
+            if (item.kind === 'file') {
+                const file = item.getAsFile();
+                if (file) files.push(file);
+            }
+        }
+    }
+    return files;
 }
 
 function deselectImage() {
@@ -1279,6 +1668,11 @@ document.getElementById('tb-img').addEventListener('click', () => {
     if (!editorWritable()) return;
     document.getElementById('img-file').click();
 });
+document.getElementById('tb-file').addEventListener('click', () => {
+    if (!editorWritable()) return;
+    rememberRange();
+    document.getElementById('any-file').click();
+});
 document.getElementById('tb-compress').addEventListener('click', () => {
     compressionEnabled = !compressionEnabled;
     localStorage.setItem('rbw-img-compress', compressionEnabled ? '1' : '0');
@@ -1287,7 +1681,14 @@ document.getElementById('tb-compress').addEventListener('click', () => {
 document.getElementById('img-file').addEventListener('change', async (event) => {
     const files = [...(event.target.files || [])];
     event.target.value = '';
-    for (const file of files) await insertImageFile(file);
+    rememberRange();
+    await insertFiles(files);
+});
+document.getElementById('any-file').addEventListener('change', async (event) => {
+    const files = [...(event.target.files || [])];
+    event.target.value = '';
+    rememberRange();
+    await insertFiles(files);
 });
 
 document.getElementById('lightbox').addEventListener('click', closeLightbox);
@@ -1328,6 +1729,12 @@ editorEl.addEventListener('click', (event) => {
     if (!event.target.closest('.img-resize-handle')) deselectImage();
     const link = event.target.closest && event.target.closest('a');
     if (!link || !editorEl.contains(link)) return;
+    const href = link.getAttribute('href') || '';
+    if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
+        event.preventDefault();
+        window.open(link.href, '_blank', 'noopener');
+        return;
+    }
     const id = wikiIdFromLink(link);
     if (id) {
         event.preventDefault();
@@ -1344,18 +1751,43 @@ editorEl.addEventListener('contextmenu', (event) => {
     if (link && editorEl.contains(link)) {
         event.preventDefault();
         const href = link.getAttribute('href') || '';
-        showFloatMenu(event.clientX, event.clientY, [
+        const items = [
             { label: '复制链接', onClick: () => copyText(href) },
-            { label: '打开链接', onClick: () => window.open(href, '_blank', 'noopener') },
-            { label: '取消链接', danger: true, onClick: () => { link.replaceWith(document.createTextNode(link.textContent)); scheduleSave(); } }
-        ]);
+            { label: '打开链接', onClick: () => window.open(href, '_blank', 'noopener') }
+        ];
+        if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
+            items.push({
+                label: '删除附件',
+                danger: true,
+                onClick: async () => {
+                    const ok = await deleteUploaded(href);
+                    if (!ok) {
+                        statusEl.textContent = '附件没有删掉';
+                        return;
+                    }
+                    link.remove();
+                    scheduleSave();
+                    statusEl.textContent = '附件已删除';
+                }
+            });
+        }
+        items.push({
+            label: '只去掉链接',
+            onClick: () => {
+                link.replaceWith(document.createTextNode(link.textContent));
+                scheduleSave();
+                statusEl.textContent = '链接已去掉，文件还在';
+            }
+        });
+        showFloatMenu(event.clientX, event.clientY, items);
         return;
     }
     const img = event.target.closest && event.target.closest('img');
     if (!img || !editorEl.contains(img)) return;
     event.preventDefault();
     const width = Math.round(img.getBoundingClientRect().width);
-    showFloatMenu(event.clientX, event.clientY, [
+    const src = img.getAttribute('src') || '';
+    const imageItems = [
         { label: `设为默认宽度（${width}px）`, onClick: () => { imgDefaultWidth = width; localStorage.setItem('rbw-img-width', String(width)); statusEl.textContent = `新图片默认 ${width}px`; } },
         { label: `全部调成 ${width}px`, onClick: () => { editorEl.querySelectorAll('img').forEach((node) => { node.style.width = width + 'px'; node.style.height = 'auto'; }); scheduleSave(); } },
         { label: '查看大图', onClick: () => showLightbox(img.src) },
@@ -1369,18 +1801,40 @@ editorEl.addEventListener('contextmenu', (event) => {
                 statusEl.textContent = '复制图片失败';
             }
         } },
-        { label: '删除', danger: true, onClick: () => { if (resizeImg === img) deselectImage(); img.remove(); scheduleSave(); } }
-    ]);
+        { label: '从正文去掉', onClick: () => {
+            if (resizeImg === img) deselectImage();
+            img.remove();
+            scheduleSave();
+            statusEl.textContent = '已从正文去掉，文件还在';
+        } }
+    ];
+    if (src.includes('/uploads/')) {
+        imageItems.push({
+            label: '删除图片文件',
+            danger: true,
+            onClick: async () => {
+                const ok = await deleteUploaded(src);
+                if (!ok) {
+                    statusEl.textContent = '图片文件没有删掉';
+                    return;
+                }
+                if (resizeImg === img) deselectImage();
+                img.remove();
+                scheduleSave();
+                statusEl.textContent = '图片文件已删除';
+            }
+        });
+    }
+    showFloatMenu(event.clientX, event.clientY, imageItems);
 });
 
 editorEl.addEventListener('paste', async (event) => {
     if (!editorWritable()) return;
-    const items = [...(event.clipboardData?.items || [])];
-    const imageItem = items.find((item) => item.type.startsWith('image/'));
-    if (imageItem) {
+    const files = filesFromClipboard(event.clipboardData);
+    if (files.length && !event.shiftKey) {
         event.preventDefault();
-        const file = imageItem.getAsFile();
-        if (file) await insertImageFile(file);
+        rememberRange();
+        await insertFiles(files);
         return;
     }
     const text = event.clipboardData?.getData('text/plain') || '';

@@ -66,6 +66,14 @@ body {
     letter-spacing: 0.04em;
 }
 .brand span { flex: 1; }
+#fold-side {
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 8px;
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px;
+    color: var(--side-text);
+}
 .brand button, #unfold {
     background: transparent;
     color: var(--side-dim);
@@ -115,23 +123,25 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 4px;
     background: transparent;
     border: 0;
     color: var(--side-dim);
     font: inherit;
-    font-size: 13px;
-    padding: 6px 8px;
+    font-size: 12px;
+    padding: 6px 2px;
     border-radius: 999px;
     cursor: pointer;
+    white-space: nowrap;
 }
 .mode-switch button.on { color: var(--side-text); }
 .mode-switch .dot {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     border: 2px solid currentColor;
     box-sizing: border-box;
+    flex: none;
 }
 .mode-switch button.on .dot {
     background: #f2c57c;
@@ -231,6 +241,64 @@ body {
     padding: 48px 32px 80px;
 }
 .empty { color: var(--muted); }
+body.files-mode .tree-head,
+body.files-mode .tree,
+body.files-mode #page,
+body.files-mode #empty,
+body.files-mode #trash-banner { display: none !important; }
+.files {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 36px 32px 80px;
+}
+.files-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 8px;
+}
+.files-bar h2 { margin: 0; font-size: 22px; flex: 1; }
+.files-filter { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.files-msg { color: var(--muted); font-size: 14px; min-height: 1.2em; }
+.files table { width: 100%; border-collapse: collapse; }
+.files th, .files td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+    vertical-align: middle;
+}
+.files th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.files td.num, .files th.num { text-align: right; white-space: nowrap; width: 72px; }
+.files td.thumb { width: 52px; padding-right: 0; }
+.files button.file-thumb {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: zoom-in;
+    background: var(--well);
+}
+.files button.file-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+.files td.name a { color: var(--accent); }
+.files tr.zero .refs { color: var(--muted); }
+.files button {
+    font: inherit;
+    font-size: 13px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+.files button.danger { color: #a33b32; }
 .empty button, .toolbar button {
     font: inherit;
     cursor: pointer;
@@ -300,6 +368,25 @@ body {
 }
 #tb-compress.off { opacity: 0.4; }
 .status { color: var(--muted); font-size: 12px; margin-left: auto; }
+.upload-progress {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 8px;
+}
+.upload-progress .bar {
+    flex: 1;
+    height: 6px;
+    background: var(--line);
+    border-radius: 99px;
+    overflow: hidden;
+}
+.upload-progress .bar > div {
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+}
+#upload-progress-label { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .editor {
     min-height: 50vh;
     padding: 18px 0 40px;
@@ -314,6 +401,7 @@ body {
 .editor img { max-width: 100%; height: auto; border-radius: 8px; cursor: pointer; }
 .editor img.img-selected { box-shadow: 0 0 0 2px var(--accent); }
 .editor a { color: var(--accent); }
+.editor a.file-link { text-decoration: underline; }
 .editor .cb { cursor: pointer; }
 .editor .code-block {
     margin: 8px 0;
@@ -450,11 +538,32 @@ body {
     z-index: 40;
     background: rgba(0, 0, 0, 0.86);
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 16px;
     cursor: zoom-out;
 }
-.lightbox img { max-width: 94vw; max-height: 90vh; object-fit: contain; border-radius: 6px; }
+.lightbox img { max-width: 94vw; max-height: 78vh; object-fit: contain; border-radius: 6px; }
+.lightbox-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    color: #fff;
+    font-size: 14px;
+    cursor: default;
+}
+.lightbox-bar button {
+    background: #fff;
+    color: #1c1915;
+    border: 0;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+.lightbox-bar button:disabled { opacity: 0.6; cursor: default; }
 .hidden { display: none !important; }
 .title-row { display: flex; align-items: flex-start; gap: 16px; }
 .title-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-shrink: 0; }
@@ -525,7 +634,30 @@ body {
     border-radius: 14px;
     padding: 22px;
 }
-.dialog-card h2 { margin: 0 0 8px; font-size: 22px; }
+.dialog-card h2 { margin: 0; font-size: 22px; }
+.dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    margin: -6px 0 8px;
+    padding-bottom: 8px;
+    background: var(--sheet);
+}
+#settings-close {
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+    cursor: pointer;
+}
+#settings-close:hover { background: var(--chip); color: var(--ink); }
 .dialog-card p { color: var(--muted); font-size: 14px; }
 #vault-path {
     width: 100%;
@@ -615,12 +747,13 @@ body.trash #copy-link,
 body.trash #empty-add { display: none; }
 .dialog-card.wide { width: min(640px, calc(100% - 32px)); max-height: calc(100% - 48px); overflow: auto; }
 .dialog-card h3 { margin: 16px 0 6px; font-size: 15px; }
-.dialog-card section + section { border-top: 1px solid var(--line); }
-#pw, #vault-path, #finder-input {
+.dialog-card section + section,
+#settings-tools > section { border-top: 1px solid var(--line); }
+#pw, #home-path, #vault-path, #finder-input {
     background: var(--sheet);
     color: var(--ink);
 }
-#pw {
+#pw, #home-path {
     width: 100%;
     font: inherit;
     padding: 8px 10px;
@@ -628,7 +761,7 @@ body.trash #empty-add { display: none; }
     border-radius: 8px;
 }
 .dialog-actions.start { justify-content: flex-start; flex-wrap: wrap; margin: 10px 0; }
-.dialog-actions.start button, #clear-all, #settings-close {
+.dialog-actions.start button, #clear-all {
     font: inherit;
     border: 1px solid var(--line);
     background: transparent;

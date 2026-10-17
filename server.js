@@ -17,11 +17,12 @@ import {
     seedIfEmpty,
     ensureShareToken,
     findByShareToken,
+    rewriteUploadRefs,
     trashTree,
     emptyTrash
 } from './data-manager.js';
 import { importVault, suggestVaults } from './obsidian-import.js';
-import { loadAuth, loadSessions, setPassword, checkPassword, createSession, dropSession, validSession } from './auth.js';
+import { loadAuth, loadSessions, setPassword, setHomePath, checkPassword, createSession, dropSession, validSession } from './auth.js';
 import { archiveLibrary, importLibrary } from './library.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -42,7 +43,6 @@ const upload = multer({
             cb(null, `${Date.now()}-${randomUUID().slice(0, 8)}${ext}`);
         }
     }),
-    limits: { fileSize: 15 * 1024 * 1024 }
 });
 const zipUpload = multer({
     storage: multer.diskStorage({
@@ -104,6 +104,29 @@ app.post('/api/auth/logout', async (req, res) => {
     await dropSession(readCookie(req));
     writeCookie(res, '');
     res.json({ ok: true });
+});
+
+const RESERVED_HOME = new Set(['api', 'uploads', 'index.html', 'favicon.svg', 'app.js', 'app.css', 'share.html', 'lost.html']);
+
+function homeName() {
+    const raw = String(auth.homePath || 'rbWiki').trim().replace(/^\/+|\/+$/g, '');
+    return raw || 'rbWiki';
+}
+
+function normalizeHomePath(input) {
+    const name = String(input || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(name)) return '';
+    if (RESERVED_HOME.has(name.toLowerCase())) return '';
+    if (name === auth.shareSpace) return '';
+    return name;
+}
+
+app.post('/api/auth/home', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const name = normalizeHomePath(req.body && req.body.path);
+    if (!name) return res.status(400).json({ error: '路径用 4 到 64 位字母、数字、下划线或短横线，别用系统保留的名字' });
+    auth = await setHomePath(name);
+    res.json({ path: name });
 });
 
 app.post('/api/auth/password', async (req, res) => {
@@ -206,6 +229,9 @@ function rewriteShareHtml(html, byId) {
             return `<a href="/${auth.shareSpace}/${target.shareToken}">${inner}</a>`;
         }
         const href = attrValue(attrs, 'href');
+        if (href.startsWith('/uploads/')) {
+            return `<a class="file-link" href="${escapeAttr(href)}">${inner}</a>`;
+        }
         if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
             return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener">${inner}</a>`;
         }
@@ -296,10 +322,165 @@ app.delete('/api/pages/:id', async (req, res) => {
     res.json(result);
 });
 
-app.post('/api/upload', upload.single('image'), (req, res) => {
+function decodeUploadName(name) {
+    const raw = String(name || '');
+    if ([...raw].some((ch) => ch.charCodeAt(0) > 255)) return raw;
+    const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+    if (decoded.includes('\uFFFD')) return raw;
+    if (Buffer.from(decoded, 'utf8').toString('latin1') !== raw) return raw;
+    return decoded;
+}
+
+function safeUploadName(name) {
+    const base = path.basename(decodeUploadName(name)).replace(/[\\/:*?"<>|]/g, '_').slice(0, 180);
+    return base || '文件';
+}
+
+app.post('/api/upload', (req, res) => {
     if (!guardWrite(req, res)) return;
-    if (!req.file) return res.status(400).json({ error: 'no file' });
-    res.json({ url: `/uploads/${req.file.filename}` });
+    upload.single('file')(req, res, (err) => {
+        if (err) return res.status(400).json({ error: '上传失败' });
+        if (!req.file) return res.status(400).json({ error: '没有文件' });
+        res.json({
+            url: `/uploads/${req.file.filename}`,
+            name: safeUploadName(req.file.originalname),
+            size: req.file.size
+        });
+    });
+});
+
+function removeUpload(rawName) {
+    const name = path.basename(String(rawName || ''));
+    if (!name || name !== String(rawName || '') || name === '.' || name === '..') return false;
+    const root = path.resolve(getUploadsDir());
+    const target = path.resolve(root, name);
+    if (target !== path.join(root, name) || !fs.existsSync(target)) return false;
+    fs.unlinkSync(target);
+    return true;
+}
+
+app.delete('/api/uploads/:name', (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const removed = removeUpload(req.params.name);
+    if (!removed) return res.status(404).json({ error: '文件不在了' });
+    res.json({ ok: true });
+});
+
+function uploadFilePath(rawName) {
+    const name = path.basename(String(rawName || ''));
+    if (!name || name !== String(rawName || '') || name === '.' || name === '..') return null;
+    const root = path.resolve(getUploadsDir());
+    const target = path.resolve(root, name);
+    if (target !== path.join(root, name) || !fs.existsSync(target)) return null;
+    return target;
+}
+
+const replaceUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, getUploadsDir()),
+        filename: (req, file, cb) => cb(null, `.replace-${Date.now()}-${randomUUID().slice(0, 8)}`)
+    })
+});
+
+app.put('/api/uploads/:name', (req, res) => {
+    if (!guardWrite(req, res)) return;
+    replaceUpload.single('file')(req, res, async (err) => {
+        if (err || !req.file) return res.status(400).json({ error: '没有文件' });
+        const tempPath = req.file.path;
+        const dropTemp = () => { try { fs.unlinkSync(tempPath); } catch { /* already moved */ } };
+        try {
+            const oldName = path.basename(String(req.params.name || ''));
+            const oldPath = uploadFilePath(oldName);
+            if (!oldPath) {
+                dropTemp();
+                return res.status(404).json({ error: '文件不在了' });
+            }
+            if (!String(req.file.mimetype || '').startsWith('image/')) {
+                dropTemp();
+                return res.status(400).json({ error: '只能替换图片' });
+            }
+            const ext = path.extname(req.file.originalname || '').toLowerCase();
+            const safeExt = ext === '.jpeg' ? '.jpg' : (/^\.(jpg|png|webp|gif)$/.test(ext) ? ext : '.jpg');
+            const stem = path.basename(oldName, path.extname(oldName));
+            const newName = stem + safeExt;
+            const newPath = path.join(path.dirname(oldPath), newName);
+            if (newName !== oldName && fs.existsSync(newPath)) {
+                dropTemp();
+                return res.status(409).json({ error: '同名文件已经在了' });
+            }
+            fs.copyFileSync(tempPath, newPath);
+            dropTemp();
+            if (newName !== oldName) {
+                fs.unlinkSync(oldPath);
+                await rewriteUploadRefs(oldName, newName);
+            }
+            const size = fs.statSync(newPath).size;
+            res.json({ url: `/uploads/${newName}`, name: newName, size, from: oldName });
+        } catch {
+            dropTemp();
+            res.status(500).json({ error: '替换失败' });
+        }
+    });
+});
+
+function uploadRefCount(html, name) {
+    const needle = `/uploads/${name}`;
+    let refs = 0;
+    let from = 0;
+    const text = String(html || '');
+    while (from < text.length) {
+        const at = text.indexOf(needle, from);
+        if (at < 0) break;
+        const next = text[at + needle.length] || '';
+        if (!/[A-Za-z0-9._-]/.test(next)) refs += 1;
+        from = at + needle.length;
+    }
+    return refs;
+}
+
+function uploadLabel(html, name) {
+    const needle = `/uploads/${name}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = String(html || '').match(new RegExp(`<a\\b[^>]*href="${needle}"[^>]*>([^<]*)</a>`));
+    if (!match) return '';
+    return decodeUploadName(match[1]).replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+app.get('/api/uploads', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const pages = await listPages({ deleted: 'all' });
+    const dir = getUploadsDir();
+    const names = fs.readdirSync(dir).filter((name) => {
+        try { return fs.statSync(path.join(dir, name)).isFile(); } catch { return false; }
+    });
+    const items = names.map((name) => {
+        const stat = fs.statSync(path.join(dir, name));
+        let refs = 0;
+        let label = '';
+        for (const page of pages) {
+            refs += uploadRefCount(page.content, name);
+            if (!label) label = uploadLabel(page.content, name);
+        }
+        return {
+            name,
+            url: `/uploads/${name}`,
+            size: stat.size,
+            mtime: stat.mtimeMs,
+            refs,
+            label: label || name
+        };
+    });
+    items.sort((a, b) => b.mtime - a.mtime);
+    res.json(items);
+});
+
+app.post('/api/uploads/delete', (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const names = Array.isArray(req.body && req.body.names) ? req.body.names : [];
+    let count = 0;
+    for (const raw of names) {
+        if (removeUpload(raw)) count += 1;
+    }
+    res.json({ count });
 });
 
 app.get(`/${auth.shareSpace}/:token`, (req, res) => {
@@ -310,8 +491,12 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(publicDir, 'lost.html'));
 });
 
-app.get(['/rbWiki', '/rbWiki/', '/rbwiki', '/rbwiki/'], (req, res) => {
-    res.sendFile(path.join(publicDir, 'index.html'));
+app.use((req, res, next) => {
+    const name = req.path.replace(/^\/+|\/+$/g, '');
+    if (name && name.toLowerCase() === homeName().toLowerCase()) {
+        return res.sendFile(path.join(publicDir, 'index.html'));
+    }
+    next();
 });
 
 app.use((req, res, next) => {
@@ -326,6 +511,13 @@ app.use(express.static(publicDir, {
         if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
     }
 }));
+
+app.use((req, res) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api/')) {
+        return res.status(404).sendFile(path.join(publicDir, 'lost.html'));
+    }
+    res.status(404).json({ error: 'not found' });
+});
 
 const port = Number(process.env.PORT) || 3010;
 app.listen(port, () => {

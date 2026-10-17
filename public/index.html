@@ -14,15 +14,15 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=11">
+    <link rel="stylesheet" href="/app.css?v=18">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
         <div class="brand">
-            <button id="fold-side" type="button" title="收起侧栏">⟨</button>
-            <img src="/favicon.svg" alt="" width="22" height="22">
-            <span>RBWiki</span>
             <button id="settings-btn" type="button" title="设置">⚙</button>
+            <img src="/favicon.svg" alt="" width="22" height="22">
+            <button id="fold-side" type="button">收起</button>
+            <span>RBWiki</span>
         </div>
         <div class="search-row">
             <input id="search" type="search" placeholder="搜索  Ctrl+O" autocomplete="off" readonly>
@@ -35,6 +35,10 @@
             <button id="mode-trash" type="button">
                 <span class="dot"></span>
                 <span>回收站</span>
+            </button>
+            <button id="mode-files" type="button" title="附件管理">
+                <span class="dot"></span>
+                <span>附件</span>
             </button>
         </div>
         <div class="tree-head" id="tree-head">
@@ -56,6 +60,26 @@
             <p>还没有页面。</p>
             <button id="empty-add" type="button">新建第一页</button>
         </div>
+        <section id="files" class="files hidden">
+            <div class="files-bar">
+                <h2>附件管理</h2>
+                <label class="files-filter"><input id="files-zero" type="checkbox"> 只看零引用</label>
+                <button id="files-delete-zero" type="button" class="hidden">删除这些</button>
+            </div>
+            <p id="files-msg" class="files-msg"></p>
+            <table>
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>文件</th>
+                        <th class="num">大小</th>
+                        <th class="num">引用</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="files-body"></tbody>
+            </table>
+        </section>
         <article id="page" class="page hidden">
             <div class="title-row">
                 <input id="title" class="title" type="text" placeholder="无标题" autocomplete="off">
@@ -77,9 +101,15 @@
                 <button type="button" class="toolbar-btn" id="tb-code" title="代码块">&lt;/&gt;</button>
                 <button type="button" class="toolbar-btn" id="tb-link" title="链接  Ctrl+L">🔗</button>
                 <button type="button" class="toolbar-btn" id="tb-img" title="插入图片">🖼</button>
+                <button type="button" class="toolbar-btn" id="tb-file" title="上传文件，也可以 Ctrl+V 粘贴">📎</button>
                 <button type="button" class="toolbar-btn" id="tb-compress" title="图片压缩：关">🗜</button>
                 <input id="img-file" type="file" accept="image/*" multiple hidden>
+                <input id="any-file" type="file" multiple hidden>
                 <span id="status" class="status"></span>
+            </div>
+            <div id="upload-progress" class="upload-progress hidden">
+                <div class="bar"><div id="upload-progress-bar"></div></div>
+                <span id="upload-progress-label"></span>
             </div>
             <div id="editor" class="editor" contenteditable="true" spellcheck="false"></div>
             <div id="img-resize-handle" class="img-resize-handle"></div>
@@ -102,45 +132,47 @@
     </div>
     <div id="settings" class="dialog hidden">
         <div class="dialog-card wide">
-            <h2>设置</h2>
-            <section>
-                <h3>外观</h3>
-                <p>自动会跟着系统的黑白走。也可以固定成白色或黑色。</p>
-                <div class="theme-switch" id="theme-switch-settings">
-                    <button type="button" data-theme="auto">自动</button>
-                    <button type="button" data-theme="light">白色</button>
-                    <button type="button" data-theme="dark">黑色</button>
-                </div>
-            </section>
+            <div class="dialog-head">
+                <h2>设置</h2>
+                <button type="button" id="settings-close" title="关闭">×</button>
+            </div>
             <section>
                 <h3>写入密码</h3>
                 <p id="auth-hint"></p>
                 <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
                 <div class="dialog-actions start">
-                    <button type="button" id="pw-login">解锁写入</button>
-                    <button type="button" id="pw-set">保存密码</button>
-                    <button type="button" id="pw-logout">锁定</button>
+                    <button type="button" id="pw-login">解锁</button>
+                    <button type="button" id="pw-set" class="hidden">保存密码</button>
+                    <button type="button" id="pw-logout" class="hidden">锁定</button>
                 </div>
             </section>
-            <section>
-                <h3>库</h3>
-                <div class="dialog-actions start">
-                    <button type="button" id="export-lib">导出压缩包</button>
-                    <button type="button" id="import-lib">导入压缩包</button>
-                    <input id="lib-file" type="file" accept=".zip,application/zip" hidden>
-                    <button type="button" id="open-obsidian">导入 Obsidian</button>
-                </div>
-            </section>
-            <section>
-                <h3>页面</h3>
-                <p>全部移入回收站之后，用搜索下面的开关切过去就能看到。清空回收站会永久删掉里面的页面。</p>
-                <div class="dialog-actions start">
-                    <button type="button" id="clear-all">全部移入回收站</button>
-                    <button type="button" id="empty-trash">清空回收站</button>
-                </div>
-            </section>
-            <div class="dialog-actions">
-                <button type="button" id="settings-close">关闭</button>
+            <div id="settings-tools" class="hidden">
+                <section>
+                    <h3>主页面</h3>
+                    <p class="hint">现在默认是 /rbWiki。改成一段别人猜不到的路径后，旧地址就打不开了。改完会立刻跳到新地址。</p>
+                    <input id="home-path" type="text" autocomplete="off" spellcheck="false" maxlength="64">
+                    <div class="dialog-actions start">
+                        <button type="button" id="home-random">随机一段</button>
+                        <button type="button" id="home-save">保存地址</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>库</h3>
+                    <div class="dialog-actions start">
+                        <button type="button" id="export-lib">导出压缩包</button>
+                        <button type="button" id="import-lib">导入压缩包</button>
+                        <input id="lib-file" type="file" accept=".zip,application/zip" hidden>
+                        <button type="button" id="open-obsidian">导入 Obsidian</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>页面</h3>
+                    <p>全部移入回收站之后，用搜索下面的开关切过去就能看到。清空回收站会永久删掉里面的页面。</p>
+                    <div class="dialog-actions start">
+                        <button type="button" id="clear-all">全部移入回收站</button>
+                        <button type="button" id="empty-trash">清空回收站</button>
+                    </div>
+                </section>
             </div>
             <p id="settings-msg" class="import-msg"></p>
         </div>
@@ -159,6 +191,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=10"></script>
+    <script src="/app.js?v=18"></script>
 </body>
 </html>

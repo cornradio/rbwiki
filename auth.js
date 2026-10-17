@@ -43,6 +43,13 @@ async function persistSessions() {
     await fs.writeFile(sessionFile, JSON.stringify(data), 'utf-8');
 }
 
+export async function setHomePath(homePath) {
+    const auth = await loadAuth();
+    auth.homePath = homePath;
+    await save(auth);
+    return auth;
+}
+
 export async function setPassword(password) {
     const salt = randomBytes(16);
     const hash = await scrypt(password, salt, 32);
