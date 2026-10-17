@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RBWiki</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <script>
+        (function () {
+            try {
+                var choice = localStorage.getItem('rbw-theme') || 'auto';
+                var dark = choice === 'dark' || (choice !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+                if (dark) document.documentElement.classList.add('theme-dark');
+            } catch (e) {}
+        })();
+    </script>
+    <style>
+        :root {
+            --ink: #1c1915;
+            --muted: #6f675e;
+            --line: #e4ddd2;
+            --paper: #f6f1e8;
+            --sheet: #fffdf8;
+            --well: #f3eee6;
+            --accent: #c4552a;
+            color-scheme: light;
+        }
+        html.theme-dark {
+            --ink: #ece6dc;
+            --muted: #a79d91;
+            --line: #3a342c;
+            --paper: #141311;
+            --sheet: #1e1b17;
+            --well: #2a2622;
+            --accent: #e07a52;
+            color-scheme: dark;
+        }
+        body { margin: 0; background: var(--paper); color: var(--ink); font: 16.5px/1.7 "Segoe UI", "Microsoft YaHei", sans-serif; }
+        .look {
+            position: sticky;
+            top: 0;
+            display: flex;
+            justify-content: flex-end;
+            gap: 4px;
+            padding: 12px 18px 0;
+        }
+        .look button {
+            font: inherit;
+            font-size: 12px;
+            color: var(--muted);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 999px;
+            padding: 3px 9px;
+            cursor: pointer;
+        }
+        .look button.on { color: var(--ink); border-color: var(--line); background: var(--sheet); }
+        article { max-width: 760px; margin: 0 auto; padding: 28px 32px 80px; }
+        h1 { margin: 0 0 18px; font: 700 34px/1.25 "Palatino Linotype", "Songti SC", "SimSun", serif; }
+        img { max-width: 100%; border-radius: 8px; }
+        pre, code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; }
+        pre { background: var(--well); border-radius: 8px; padding: 10px 12px; overflow: auto; }
+        a { color: var(--accent); }
+    </style>
+</head>
+<body>
+    <div class="look" id="theme-switch">
+        <button type="button" data-theme="auto">自动</button>
+        <button type="button" data-theme="light">白</button>
+        <button type="button" data-theme="dark">黑</button>
+    </div>
+    <article>
+        <h1 id="title"></h1>
+        <div id="body"></div>
+    </article>
+    <script>
+        const themeMedia = matchMedia('(prefers-color-scheme: dark)');
+        function paintTheme() {
+            const choice = localStorage.getItem('rbw-theme') || 'auto';
+            const dark = choice === 'dark' || (choice !== 'light' && themeMedia.matches);
+            document.documentElement.classList.toggle('theme-dark', dark);
+            document.querySelectorAll('#theme-switch [data-theme]').forEach((btn) => {
+                btn.classList.toggle('on', btn.dataset.theme === choice);
+            });
+        }
+        themeMedia.addEventListener('change', paintTheme);
+        document.getElementById('theme-switch').addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-theme]');
+            if (!btn) return;
+            localStorage.setItem('rbw-theme', btn.dataset.theme);
+            paintTheme();
+        });
+        paintTheme();
+
+        const token = location.pathname.split('/').filter(Boolean).pop();
+        fetch('/api/view/' + encodeURIComponent(token)).then(async (res) => {
+            const title = document.getElementById('title');
+            const body = document.getElementById('body');
+            if (!res.ok) {
+                title.textContent = '这篇不存在';
+                return;
+            }
+            const page = await res.json();
+            document.title = (page.title || '未命名') + ' · RBWiki';
+            title.textContent = page.title || '未命名';
+            body.innerHTML = page.content || '';
+        });
+    </script>
+</body>
+</html>

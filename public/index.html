@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RBWiki</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <script>
+        (function () {
+            try {
+                var choice = localStorage.getItem('rbw-theme') || 'auto';
+                var dark = choice === 'dark' || (choice !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+                if (dark) document.documentElement.classList.add('theme-dark');
+            } catch (e) {}
+        })();
+    </script>
+    <link rel="stylesheet" href="/app.css?v=11">
+</head>
+<body>
+    <aside class="sidebar" id="sidebar">
+        <div class="brand">
+            <button id="fold-side" type="button" title="收起侧栏">⟨</button>
+            <img src="/favicon.svg" alt="" width="22" height="22">
+            <span>RBWiki</span>
+            <button id="settings-btn" type="button" title="设置">⚙</button>
+        </div>
+        <div class="search-row">
+            <input id="search" type="search" placeholder="搜索  Ctrl+O" autocomplete="off" readonly>
+        </div>
+        <div class="mode-switch" id="mode-switch">
+            <button id="mode-lib" type="button" class="on">
+                <span class="dot"></span>
+                <span>库</span>
+            </button>
+            <button id="mode-trash" type="button">
+                <span class="dot"></span>
+                <span>回收站</span>
+            </button>
+        </div>
+        <div class="tree-head" id="tree-head">
+            <span id="tree-label">页面</span>
+            <button id="fold-all" type="button" title="全部收起">收起</button>
+            <button id="add-root" type="button" title="新建页面">+</button>
+        </div>
+        <nav id="tree" class="tree"></nav>
+    </aside>
+    <main class="sheet">
+        <button id="unfold" type="button" title="展开目录">目录</button>
+        <div class="look" id="theme-switch">
+            <button type="button" data-theme="auto">自动</button>
+            <button type="button" data-theme="light">白</button>
+            <button type="button" data-theme="dark">黑</button>
+        </div>
+        <div id="trash-banner" class="trash-banner hidden">回收站。右键一篇可以恢复，或永久删除。</div>
+        <div id="empty" class="empty hidden">
+            <p>还没有页面。</p>
+            <button id="empty-add" type="button">新建第一页</button>
+        </div>
+        <article id="page" class="page hidden">
+            <div class="title-row">
+                <input id="title" class="title" type="text" placeholder="无标题" autocomplete="off">
+                <div class="title-actions">
+                    <button id="locate" type="button" title="在目录里定位">定位</button>
+                    <button id="copy-link" type="button" title="复制这篇的分享链接">分享</button>
+                    <button id="trash-page" type="button" title="移入回收站">删除</button>
+                </div>
+            </div>
+            <div class="toolbar">
+                <label class="toolbar-btn" id="tb-color-label" title="文字颜色。右键再用上次的颜色">A
+                    <input type="color" id="tb-color" value="#c4552a">
+                </label>
+                <button type="button" class="toolbar-btn" id="tb-clear-color" title="清除格式。按住 Shift 再点，清整篇并保留图片">A₀</button>
+                <button type="button" class="toolbar-btn" id="tb-checkbox" title="插入复选框">✅</button>
+                <button type="button" class="toolbar-btn" id="tb-numlist" title="有序列表">1.</button>
+                <button type="button" class="toolbar-btn" id="tb-emoji" title="表情  Ctrl+E">😀</button>
+                <button type="button" class="toolbar-btn" id="tb-datetime" title="插入日期时间">🕐</button>
+                <button type="button" class="toolbar-btn" id="tb-code" title="代码块">&lt;/&gt;</button>
+                <button type="button" class="toolbar-btn" id="tb-link" title="链接  Ctrl+L">🔗</button>
+                <button type="button" class="toolbar-btn" id="tb-img" title="插入图片">🖼</button>
+                <button type="button" class="toolbar-btn" id="tb-compress" title="图片压缩：关">🗜</button>
+                <input id="img-file" type="file" accept="image/*" multiple hidden>
+                <span id="status" class="status"></span>
+            </div>
+            <div id="editor" class="editor" contenteditable="true" spellcheck="false"></div>
+            <div id="img-resize-handle" class="img-resize-handle"></div>
+        </article>
+    </main>
+    <div id="finder" class="finder hidden">
+        <div class="finder-card">
+            <input id="finder-input" type="search" placeholder="搜索标题和正文" autocomplete="off">
+            <div class="finder-modes">
+                <button type="button" id="mode-all" class="on">标题和正文</button>
+                <button type="button" id="mode-title">只看标题</button>
+            </div>
+            <div id="finder-results" class="finder-results"></div>
+        </div>
+    </div>
+    <div id="menu" class="menu hidden">
+        <button type="button" id="menu-trash">移入回收站</button>
+        <button type="button" id="menu-restore" class="hidden">恢复</button>
+        <button type="button" id="menu-purge" class="hidden">永久删除</button>
+    </div>
+    <div id="settings" class="dialog hidden">
+        <div class="dialog-card wide">
+            <h2>设置</h2>
+            <section>
+                <h3>外观</h3>
+                <p>自动会跟着系统的黑白走。也可以固定成白色或黑色。</p>
+                <div class="theme-switch" id="theme-switch-settings">
+                    <button type="button" data-theme="auto">自动</button>
+                    <button type="button" data-theme="light">白色</button>
+                    <button type="button" data-theme="dark">黑色</button>
+                </div>
+            </section>
+            <section>
+                <h3>写入密码</h3>
+                <p id="auth-hint"></p>
+                <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
+                <div class="dialog-actions start">
+                    <button type="button" id="pw-login">解锁写入</button>
+                    <button type="button" id="pw-set">保存密码</button>
+                    <button type="button" id="pw-logout">锁定</button>
+                </div>
+            </section>
+            <section>
+                <h3>库</h3>
+                <div class="dialog-actions start">
+                    <button type="button" id="export-lib">导出压缩包</button>
+                    <button type="button" id="import-lib">导入压缩包</button>
+                    <input id="lib-file" type="file" accept=".zip,application/zip" hidden>
+                    <button type="button" id="open-obsidian">导入 Obsidian</button>
+                </div>
+            </section>
+            <section>
+                <h3>页面</h3>
+                <p>全部移入回收站之后，用搜索下面的开关切过去就能看到。清空回收站会永久删掉里面的页面。</p>
+                <div class="dialog-actions start">
+                    <button type="button" id="clear-all">全部移入回收站</button>
+                    <button type="button" id="empty-trash">清空回收站</button>
+                </div>
+            </section>
+            <div class="dialog-actions">
+                <button type="button" id="settings-close">关闭</button>
+            </div>
+            <p id="settings-msg" class="import-msg"></p>
+        </div>
+    </div>
+    <div id="import-dialog" class="dialog hidden">
+        <div class="dialog-card">
+            <h2>导入 Obsidian</h2>
+            <p>选一个库的文件夹。再导入时会对照上次的内容，只写入新的或改过的笔记，以及新的附件。</p>
+            <input id="vault-path" type="text" placeholder="库文件夹路径" autocomplete="off">
+            <div id="vault-list" class="vault-list"></div>
+            <div class="dialog-actions">
+                <button type="button" id="import-cancel">取消</button>
+                <button type="button" id="import-go">导入</button>
+            </div>
+            <p id="import-msg" class="import-msg"></p>
+        </div>
+    </div>
+    <div id="lightbox" class="lightbox hidden"></div>
+    <script src="/app.js?v=10"></script>
+</body>
+</html>

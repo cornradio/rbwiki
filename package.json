@@ -1,0 +1,15 @@
+{
+  "name": "rbwiki",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "archiver": "^7.0.1",
+    "express": "^4.21.2",
+    "multer": "^2.4.0"
+  }
+}

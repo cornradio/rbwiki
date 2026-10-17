@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>你好像走丢了</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <script>
+        (function () {
+            try {
+                var choice = localStorage.getItem('rbw-theme') || 'auto';
+                var dark = choice === 'dark' || (choice !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+                if (dark) document.documentElement.classList.add('theme-dark');
+            } catch (e) {}
+        })();
+    </script>
+    <style>
+        :root { --ink: #1c1915; --paper: #f6f1e8; color-scheme: light; }
+        html.theme-dark { --ink: #ece6dc; --paper: #141311; color-scheme: dark; }
+        html, body { height: 100%; margin: 0; }
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--paper);
+            color: var(--ink);
+            font: 18px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+        }
+        p {
+            margin: 0;
+            font: 700 28px/1.4 "Palatino Linotype", "Songti SC", serif;
+        }
+    </style>
+</head>
+<body>
+    <p>你好像走丢了</p>
+</body>
+</html>
