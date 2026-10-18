@@ -16,6 +16,7 @@ let saveTimer = null;
 let savedRange = null;
 let trashMode = false;
 let canWrite = true;
+let editorComposing = false;
 let finderMode = 'all';
 let finderIndex = 0;
 let finderHits = [];
@@ -227,12 +228,16 @@ function row(page) {
         if (!canWrite) return;
         e.preventDefault();
         menuPageId = page.id;
+        document.querySelectorAll('.row.menu-target').forEach((node) => node.classList.remove('menu-target'));
+        el.classList.add('menu-target');
+        document.getElementById('menu-copy').classList.toggle('hidden', trashMode);
+        document.getElementById('menu-export').classList.toggle('hidden', trashMode || !hasKids);
         document.getElementById('menu-trash').classList.toggle('hidden', trashMode);
         document.getElementById('menu-restore').classList.toggle('hidden', !trashMode);
         document.getElementById('menu-purge').classList.toggle('hidden', !trashMode);
         menuEl.classList.remove('hidden');
         menuEl.style.left = Math.min(e.clientX, window.innerWidth - 160) + 'px';
-        menuEl.style.top = Math.min(e.clientY, window.innerHeight - 96) + 'px';
+        menuEl.style.top = Math.min(e.clientY, window.innerHeight - 140) + 'px';
     });
     el.addEventListener('dragstart', (e) => {
         e.dataTransfer.setData('text/plain', page.id);
@@ -259,7 +264,10 @@ function showCurrent() {
     applyLock();
     if (!page) return;
     if (document.activeElement !== titleEl) titleEl.value = page.title || '';
-    if (document.activeElement !== editorEl) editorEl.innerHTML = page.content || '';
+    if (document.activeElement !== editorEl) {
+        editorEl.innerHTML = page.content || '';
+        decorateHeadings();
+    }
     deselectImage();
     closeLinkBar(false);
     closeFloatMenus();
@@ -280,6 +288,7 @@ async function openPage(id) {
     renderTree();
     titleEl.value = page.title || '';
     editorEl.innerHTML = page.content || '';
+    decorateHeadings();
     deselectImage();
     closeLinkBar(false);
     closeFloatMenus();
@@ -334,7 +343,7 @@ async function flushSave() {
     const page = pages.find((p) => p.id === currentId);
     if (!page || !canWrite || trashMode) return;
     const title = titleEl.value;
-    const content = stripUploadCache(editorEl.innerHTML);
+    const content = editorContent();
     if (title === page.title && content === (page.content || '')) return;
     statusEl.textContent = '保存中…';
     const res = await api('/api/pages/' + page.id, {
@@ -464,6 +473,7 @@ function chooseFinder(index) {
 function closeMenu() {
     menuEl.classList.add('hidden');
     menuPageId = null;
+    document.querySelectorAll('.row.menu-target').forEach((node) => node.classList.remove('menu-target'));
 }
 
 function setSide(open) {
@@ -806,6 +816,77 @@ document.getElementById('empty-trash').addEventListener('click', async () => {
     msg.textContent = data.count ? `已永久删除 ${data.count} 页` : '回收站本来就是空的';
 });
 
+document.getElementById('menu-copy').addEventListener('click', async () => {
+    const page = pages.find((p) => p.id === menuPageId);
+    closeMenu();
+    if (!page || !canWrite || trashMode) return;
+    const copyId = await copyBranch(page);
+    if (!copyId) {
+        statusEl.textContent = '没有复制成';
+        return;
+    }
+    await load(copyId);
+    statusEl.textContent = '已复制为「' + ((page.title || '未命名') + '-copy') + '」';
+});
+
+async function copyBranch(page) {
+    const sources = [page, ...descendantIds(page.id).map((id) => pages.find((item) => item.id === id)).filter(Boolean)];
+    const idMap = new Map();
+    for (const source of sources) {
+        const parentId = source.id === page.id ? (page.parentId || null) : idMap.get(source.parentId);
+        const title = source.id === page.id ? (source.title || '未命名') + '-copy' : (source.title || '未命名');
+        const res = await api('/api/pages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title, parentId, content: '' })
+        });
+        if (!res.ok) return '';
+        const created = await res.json();
+        idMap.set(source.id, created.id);
+    }
+    for (const source of sources) {
+        const content = retargetCopiedHtml(source.content || '', idMap);
+        if (!content) continue;
+        const res = await api('/api/pages/' + idMap.get(source.id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content })
+        });
+        if (!res.ok) return '';
+    }
+    const copyId = idMap.get(page.id);
+    await load(copyId);
+    await placeCopyBeside(page.id, copyId);
+    return copyId;
+}
+
+function retargetCopiedHtml(html, idMap) {
+    let next = String(html || '');
+    idMap.forEach((newId, oldId) => {
+        next = next.split(oldId).join(newId);
+    });
+    return next;
+}
+
+async function placeCopyBeside(sourceId, copyId) {
+    const source = pages.find((item) => item.id === sourceId);
+    const copy = pages.find((item) => item.id === copyId);
+    if (!source || !copy) return;
+    const siblings = childrenOf(source.parentId || null).filter((item) => item.id !== copyId);
+    const at = siblings.findIndex((item) => item.id === sourceId);
+    siblings.splice(Math.max(0, at + 1), 0, copy);
+    for (let i = 0; i < siblings.length; i++) {
+        if ((siblings[i].order || 0) === i) continue;
+        const res = await api('/api/pages/' + siblings[i].id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order: i })
+        });
+        if (res.ok) siblings[i].order = i;
+    }
+    renderTree();
+}
+
 document.getElementById('menu-trash').addEventListener('click', async () => {
     const page = pages.find((p) => p.id === menuPageId);
     closeMenu();
@@ -825,18 +906,35 @@ document.getElementById('menu-restore').addEventListener('click', async () => {
     const page = pages.find((p) => p.id === menuPageId);
     closeMenu();
     if (!page) return;
-    await api('/api/pages/' + page.id + '/restore', { method: 'POST' });
-    await load(null);
-    statusEl.textContent = '已恢复「' + (page.title || '未命名') + '」';
+    const res = await api('/api/pages/' + page.id + '/restore', { method: 'POST' });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    trashMode = false;
+    viewMode = 'lib';
+    document.getElementById('mode-lib').classList.add('on');
+    document.getElementById('mode-trash').classList.remove('on');
+    document.getElementById('mode-files').classList.remove('on');
+    document.body.classList.remove('files-mode');
+    document.getElementById('files').classList.add('hidden');
+    await load(page.id);
+    const count = data.count || 1;
+    statusEl.textContent = count > 1
+        ? '已恢复「' + (page.title || '未命名') + '」，一共 ' + count + ' 页'
+        : '已恢复「' + (page.title || '未命名') + '」';
 });
 
 document.getElementById('menu-purge').addEventListener('click', async () => {
     const page = pages.find((p) => p.id === menuPageId);
     closeMenu();
     if (!page) return;
-    if (!confirm('彻底删除「' + (page.title || '未命名') + '」？不能恢复。')) return;
-    await api('/api/pages/' + page.id, { method: 'DELETE' });
+    const kids = descendantIds(page.id).length;
+    const extra = kids ? '，以及里面的 ' + kids + ' 页' : '';
+    if (!confirm('彻底删除「' + (page.title || '未命名') + '」' + extra + '？不能恢复。')) return;
+    const res = await api('/api/pages/' + page.id, { method: 'DELETE' });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
     await load(null);
+    statusEl.textContent = '已彻底删除 ' + (data.count || 1) + ' 页';
 });
 
 document.addEventListener('click', (e) => {
@@ -896,10 +994,29 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+let pickedVault = null;
+
+function vaultSkip(rel) {
+    return String(rel || '').split('/').some((part) => part === '.obsidian' || part === '.trash' || part === '.git' || part === 'node_modules');
+}
+
+function describeVaultPick() {
+    const picked = document.getElementById('vault-picked');
+    if (!pickedVault) {
+        picked.textContent = '';
+        return;
+    }
+    picked.textContent = pickedVault.kind === 'zip'
+        ? '已选压缩包 ' + pickedVault.file.name
+        : '已选本机库「' + pickedVault.label + '」，' + pickedVault.files.length + ' 个文件';
+}
+
 document.getElementById('open-obsidian').addEventListener('click', async () => {
     const dialog = document.getElementById('import-dialog');
     dialog.classList.remove('hidden');
-    document.getElementById('import-msg').textContent = '正在查找本机的库…';
+    pickedVault = null;
+    describeVaultPick();
+    document.getElementById('import-msg').textContent = '正在查找服务器上的库…';
     const res = await fetch('/api/obsidian/vaults');
     const vaults = await res.json();
     const list = document.getElementById('vault-list');
@@ -910,20 +1027,123 @@ document.getElementById('open-obsidian').addEventListener('click', async () => {
         btn.textContent = vault;
         btn.addEventListener('click', () => {
             document.getElementById('vault-path').value = vault;
+            pickedVault = null;
+            describeVaultPick();
         });
         list.appendChild(btn);
     });
-    document.getElementById('import-msg').textContent = vaults.length ? '点一个库，或自己填路径。' : '没有自动找到库，请填写文件夹路径。';
+    document.getElementById('import-msg').textContent = vaults.length ? '上面是服务器磁盘上的库。本机的库请用选择按钮。' : '服务器上没有找到库。请从这台电脑选择文件夹或压缩包。';
+});
+
+document.getElementById('vault-pick').addEventListener('click', () => {
+    document.getElementById('vault-folder').click();
+});
+document.getElementById('vault-folder').addEventListener('change', (event) => {
+    const files = [...(event.target.files || [])].filter((file) => !vaultSkip(file.webkitRelativePath || file.name));
+    event.target.value = '';
+    if (!files.length) {
+        pickedVault = null;
+        describeVaultPick();
+        document.getElementById('import-msg').textContent = '这个文件夹里没有可导入的文件';
+        return;
+    }
+    const rel = files[0].webkitRelativePath || files[0].name;
+    pickedVault = { kind: 'dir', files, label: rel.split('/')[0] || '库' };
+    describeVaultPick();
+});
+document.getElementById('vault-zip').addEventListener('click', () => {
+    document.getElementById('vault-zip-file').click();
+});
+document.getElementById('vault-zip-file').addEventListener('change', (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    pickedVault = { kind: 'zip', file };
+    describeVaultPick();
+});
+
+function uploadForm(url, body, onProgress) {
+    return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) onProgress(event.loaded, event.total);
+        };
+        xhr.onload = () => {
+            let data = {};
+            try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) {}
+            resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+        };
+        xhr.onerror = () => resolve({ ok: false, status: 0, data: {} });
+        xhr.send(body);
+    });
+}
+
+async function downloadObsidian(rootId) {
+    const page = rootId ? pages.find((item) => item.id === rootId) : null;
+    const res = await api('/api/obsidian/export' + (rootId ? '?root=' + encodeURIComponent(rootId) : ''));
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const title = (page && page.title) || 'rbwiki';
+    a.href = url;
+    a.download = title.replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) + '-obsidian.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    const msg = '已导出「' + (title || '未命名') + '」';
+    if (rootId) statusEl.textContent = msg;
+    else document.getElementById('settings-msg').textContent = '已导出 Obsidian 库';
+}
+
+document.getElementById('export-obsidian').addEventListener('click', () => downloadObsidian(''));
+document.getElementById('menu-export').addEventListener('click', () => {
+    const id = menuPageId;
+    closeMenu();
+    downloadObsidian(id);
 });
 
 document.getElementById('import-cancel').addEventListener('click', () => {
     document.getElementById('import-dialog').classList.add('hidden');
 });
 
+function obsidianStatus(data) {
+    return `新增 ${data.added || 0} 篇，更新 ${data.changed || 0} 篇，跳过 ${data.skipped || 0} 篇，新附件 ${data.images || 0} 个`;
+}
+
 document.getElementById('import-go').addEventListener('click', async () => {
-    const vault = document.getElementById('vault-path').value.trim();
     const msg = document.getElementById('import-msg');
-    if (!vault) { msg.textContent = '先填路径'; return; }
+    if (pickedVault) {
+        const body = new FormData();
+        if (pickedVault.kind === 'zip') {
+            body.append('file', pickedVault.file, pickedVault.file.name);
+        } else {
+            const paths = pickedVault.files.map((file) => file.webkitRelativePath || file.name);
+            body.append('paths', JSON.stringify(paths));
+            pickedVault.files.forEach((file) => body.append('files', file, file.name));
+        }
+        msg.textContent = '正在上传…';
+        const sent = await uploadForm(pickedVault.kind === 'zip' ? '/api/obsidian/zip' : '/api/obsidian/upload', body, (loaded, total) => {
+            msg.textContent = '正在上传 ' + Math.min(100, Math.round(loaded / total * 100)) + '%';
+        });
+        if (sent.status === 401) {
+            canWrite = false;
+            document.body.classList.add('locked');
+            applyLock();
+            openSettings();
+            msg.textContent = '需要密码才能导入';
+            return;
+        }
+        if (!sent.ok) { msg.textContent = sent.data.error || '导入失败'; return; }
+        document.getElementById('import-dialog').classList.add('hidden');
+        pickedVault = null;
+        trashMode = false;
+        await load(null);
+        statusEl.textContent = obsidianStatus(sent.data);
+        return;
+    }
+    const vault = document.getElementById('vault-path').value.trim();
+    if (!vault) { msg.textContent = '先选择本机库，或填写服务器上的路径'; return; }
     msg.textContent = '正在导入，笔记多的话会等一会儿…';
     const res = await api('/api/obsidian/import', {
         method: 'POST',
@@ -935,7 +1155,7 @@ document.getElementById('import-go').addEventListener('click', async () => {
     document.getElementById('import-dialog').classList.add('hidden');
     trashMode = false;
     await load(null);
-    statusEl.textContent = `新增 ${data.added || 0} 篇，更新 ${data.changed || 0} 篇，跳过 ${data.skipped || 0} 篇，新附件 ${data.images || 0} 个`;
+    statusEl.textContent = obsidianStatus(data);
 });
 
 const DEFAULT_EMOJIS = ['😀','😂','🥲','😊','😍','🤔','😴','😭','😡','🥳','🤯','😎','🤝','👍','👎','👏','🙏','💪','✌️','🫡','❤️','💔','🔥','✨','⭐','🎉','🎁','💡','⚡','✅','❌','⚠️','📌','📝','📅','📞','📧','💻','🖥️','📱','☕','🍕','🍔','🍣','🍺','🚀','🏃','🐶','🐱','🌈','🌞','🌙','⛅','☔','🎵','📷','🔔','💰','🛒'];
@@ -950,6 +1170,7 @@ function editorWritable() {
 
 function closeFloatMenus() {
     document.querySelectorAll('.float-menu, .emoji-panel').forEach((node) => node.remove());
+    document.querySelectorAll('.context-target').forEach((node) => node.classList.remove('context-target'));
 }
 
 function closeLightbox() {
@@ -1012,6 +1233,238 @@ function retargetUpload(fromName, toName) {
 
 function stripUploadCache(html) {
     return String(html || '').replace(/(\/uploads\/[^"'?\s]+)\?v=\d+/g, '$1');
+}
+
+function editorContent() {
+    const clone = editorEl.cloneNode(true);
+    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    clone.querySelectorAll('h1, h2, h3, h4').forEach((heading) => heading.removeAttribute('data-hid'));
+    return stripUploadCache(clone.innerHTML);
+}
+
+function headingSlug(text) {
+    const slug = String(text || '')
+        .replace(/\u00a0/g, ' ')
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^\p{L}\p{N}\-_]+/gu, '')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 80);
+    return slug || 'section';
+}
+
+function headingText(el) {
+    if (!el || el.nodeType !== 1) return stripInvisible(el && el.textContent || '').replace(/\u00a0/g, ' ').replace(/\n/g, '').trim();
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    return stripInvisible(clone.innerText || '').replace(/\u00a0/g, ' ').replace(/\n/g, '').trim();
+}
+
+function stripInvisible(text) {
+    return String(text || '').replace(/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\u00ad\u180e]/g, '');
+}
+
+function stripInvisibleIn(el) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach((node) => {
+        if (node.parentElement && node.parentElement.closest('.heading-copy')) return;
+        const next = stripInvisible(node.textContent);
+        if (next !== node.textContent) node.textContent = next;
+    });
+}
+
+function caretAtBlockStart(line, sel) {
+    if (!line || !sel.rangeCount) return false;
+    const range = document.createRange();
+    range.setStart(line, 0);
+    range.setEnd(sel.anchorNode, sel.anchorOffset);
+    return stripInvisible(range.toString()).replace(/\u00a0/g, '').trim() === '';
+}
+
+function decorateHeadings() {
+    if (editorComposing) return;
+    editorEl.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    const used = new Map();
+    editorEl.querySelectorAll('h1, h2, h3, h4').forEach((heading) => {
+        let slug = headingSlug(headingText(heading));
+        const seen = used.get(slug) || 0;
+        used.set(slug, seen + 1);
+        if (seen) slug += '-' + (seen + 1);
+        stripInvisibleIn(heading);
+        heading.dataset.hid = slug;
+    });
+    renderToc();
+}
+
+function replaceBlock(line, html) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNode(line);
+    editorEl.focus();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertHTML', false, html);
+}
+
+function deleteNodesUndo(nodes) {
+    if (!nodes.length) return;
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStartBefore(nodes[0]);
+    range.setEndAfter(nodes[nodes.length - 1]);
+    editorEl.focus();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('delete');
+    if (!editorEl.firstChild) document.execCommand('insertHTML', false, '<div><br></div>');
+    decorateHeadings();
+    scheduleSave();
+}
+
+function renderToc() {
+    const box = document.getElementById('toc');
+    const list = document.getElementById('toc-list');
+    if (!box || !list) return;
+    const headings = [...editorEl.querySelectorAll('h1, h2, h3, h4')];
+    if (!headings.length) {
+        box.classList.add('hidden');
+        list.innerHTML = '';
+        return;
+    }
+    box.classList.remove('hidden');
+    box.classList.toggle('collapsed', editorWritable() && localStorage.getItem('rbw-toc') === '0');
+    list.innerHTML = '';
+    headings.forEach((heading) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'l' + heading.tagName.slice(1);
+        const mark = document.createElement('span');
+        mark.className = 'toc-level';
+        mark.textContent = '#' + heading.tagName.slice(1);
+        const label = document.createElement('span');
+        label.textContent = headingText(heading) || '无标题';
+        item.append(mark, label);
+        item.addEventListener('click', () => scrollToHeading(heading.dataset.hid));
+        list.appendChild(item);
+    });
+}
+
+document.getElementById('toc-toggle').addEventListener('click', () => {
+    const box = document.getElementById('toc');
+    const collapsed = !box.classList.contains('collapsed');
+    box.classList.toggle('collapsed', collapsed);
+    localStorage.setItem('rbw-toc', collapsed ? '0' : '1');
+});
+
+function showHeadingMenu(x, y, heading) {
+    if (!heading) return;
+    const items = [
+        { label: '复制标题链接', onClick: () => {
+            const url = headingLink(heading);
+            if (!url) return;
+            copyText(url);
+            statusEl.textContent = '已复制标题链接';
+        } }
+    ];
+    if (editorWritable()) {
+        items.push(
+            { label: '改为正文', onClick: () => headingToText(heading) },
+            { label: '删除标题', danger: true, onClick: () => removeHeading(heading, false) },
+            { label: '删除本节内容', danger: true, onClick: () => removeHeading(heading, true) }
+        );
+    } else {
+        items.push({ label: '先解锁才能改', onClick: () => { statusEl.textContent = '先解锁才能改'; } });
+    }
+    showFloatMenu(x, y, items, heading);
+}
+
+function headingToText(heading) {
+    const clone = heading.cloneNode(true);
+    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    const inner = stripInvisible(clone.innerText || '').replace(/\u00a0/g, ' ').trim() ? clone.innerHTML : '<br>';
+    replaceBlock(heading, `<div>${inner}</div>`);
+    decorateHeadings();
+    scheduleSave();
+    statusEl.textContent = '已改为正文';
+}
+
+function removeHeading(heading, section) {
+    const level = Number(heading.tagName.slice(1));
+    const drop = [heading];
+    if (section) {
+        let node = heading.nextSibling;
+        while (node) {
+            if (node.nodeType === 1 && /^H[1-4]$/.test(node.tagName) && Number(node.tagName.slice(1)) <= level) break;
+            drop.push(node);
+            node = node.nextSibling;
+        }
+    }
+    deleteNodesUndo(drop);
+    statusEl.textContent = section ? '本节已删除' : '标题已删除';
+}
+
+function headingLink(heading) {
+    const hid = heading && heading.dataset.hid;
+    if (!hid || !currentId) return '';
+    return location.origin + location.pathname + location.search + '#' + currentId + '/' + encodeURIComponent(hid);
+}
+
+function scrollToHeading(hid) {
+    const heading = [...editorEl.querySelectorAll('h1, h2, h3, h4')].find((node) => node.dataset.hid === hid);
+    if (!heading) return;
+    heading.scrollIntoView({ block: 'center' });
+    heading.classList.add('heading-target');
+    setTimeout(() => heading.classList.remove('heading-target'), 1600);
+}
+
+async function followHeadingLink() {
+    const raw = decodeURIComponent(location.hash.replace(/^#/, ''));
+    const slash = raw.indexOf('/');
+    if (slash < 0) return;
+    const id = raw.slice(0, slash);
+    const hid = raw.slice(slash + 1);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) return;
+    if (currentId !== id) await openPage(id);
+    else decorateHeadings();
+    scrollToHeading(hid);
+}
+
+function placeCaret(el) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    const target = [...el.childNodes].find((node) => !(node.nodeType === 1 && node.classList.contains('heading-copy'))) || el;
+    range.setStart(target, 0);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+}
+
+function retagHeading(line, level) {
+    const clone = line.cloneNode(true);
+    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    const text = clone.querySelector('h1, h2, h3, h4') ? null : document.createTreeWalker(clone, NodeFilter.SHOW_TEXT).nextNode();
+    if (text) text.textContent = text.textContent.replace(/^#{1,4}/, '');
+    const inner = stripInvisible(clone.innerText || '').replace(/\u00a0/g, ' ').trim() ? clone.innerHTML : '<br>';
+    replaceBlock(line, `<h${level}>${inner}</h${level}>`);
+    decorateHeadings();
+    scheduleSave();
+}
+
+function applyHeadingLevel(level) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const lines = linesOfSelection(sel).filter((line) => line && line !== editorEl && !(line.classList && line.classList.contains('code-block')));
+    if (!lines.length) return;
+    lines.forEach((line) => {
+        const text = headingText(line);
+        replaceBlock(line, `<h${level}>${text ? escapeHtml(text) : '<br>'}</h${level}>`);
+    });
+    decorateHeadings();
+    scheduleSave();
 }
 
 async function readShownSize(src, img, meta) {
@@ -1108,17 +1561,22 @@ function showLightbox(src) {
     readShownSize(src, img, meta);
 }
 
-function showFloatMenu(x, y, items) {
+function showFloatMenu(x, y, items, target) {
     closeFloatMenus();
+    if (target) target.classList.add('context-target');
     const menu = document.createElement('div');
     menu.className = 'float-menu';
+    const dismiss = () => {
+        menu.remove();
+        if (target) target.classList.remove('context-target');
+    };
     items.forEach((item) => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.textContent = item.label;
         if (item.danger) btn.className = 'danger';
         btn.addEventListener('click', () => {
-            menu.remove();
+            dismiss();
             item.onClick();
         });
         menu.appendChild(btn);
@@ -1130,18 +1588,66 @@ function showFloatMenu(x, y, items) {
     setTimeout(() => {
         document.addEventListener('mousedown', function close(event) {
             if (!menu.contains(event.target)) {
-                menu.remove();
+                dismiss();
                 document.removeEventListener('mousedown', close);
             }
         });
     }, 0);
 }
 
+function isBlockLine(node) {
+    if (!node || node.nodeType !== 1 || node.parentNode !== editorEl) return false;
+    if (node.classList.contains('code-block')) return true;
+    return /^(DIV|P|H[1-6]|UL|OL|LI|PRE|BLOCKQUOTE|TABLE|HR)$/.test(node.tagName);
+}
+
+function isInlinePiece(node) {
+    if (!node || node.parentNode !== editorEl) return false;
+    if (node.nodeType === 3) return true;
+    if (node.nodeType !== 1) return false;
+    return !isBlockLine(node) && node.tagName !== 'BR';
+}
+
+function wrapLooseLine(node) {
+    if (!node || node === editorEl || node.parentNode !== editorEl || isBlockLine(node)) return node;
+    let start = node;
+    while (isInlinePiece(start.previousSibling)) start = start.previousSibling;
+    const div = document.createElement('div');
+    start.parentNode.insertBefore(div, start);
+    while (isInlinePiece(div.nextSibling)) div.appendChild(div.nextSibling);
+    if (!div.firstChild) div.appendChild(document.createElement('br'));
+    return div;
+}
+
+function normalizeLooseLines() {
+    let node = editorEl.firstChild;
+    while (node) {
+        if (isBlockLine(node)) {
+            node = node.nextSibling;
+            continue;
+        }
+        if (node.nodeType === 1 && node.tagName === 'BR' && isBlockLine(node.previousSibling)) {
+            const next = node.nextSibling;
+            node.remove();
+            node = next;
+            continue;
+        }
+        if (node.nodeType === 1 && node.tagName === 'BR') {
+            node = node.nextSibling;
+            continue;
+        }
+        const div = wrapLooseLine(node);
+        node = div && div.nextSibling;
+    }
+}
+
 function getLineNode(sel) {
     let node = sel.anchorNode;
     if (!node) return null;
-    if (node === editorEl) return editorEl.childNodes[sel.anchorOffset] || editorEl.lastChild;
-    while (node && node.parentNode !== editorEl) node = node.parentNode;
+    if (node === editorEl) node = editorEl.childNodes[sel.anchorOffset] || editorEl.lastChild;
+    if (!node || node === editorEl) return node || editorEl;
+    while (node.parentNode && node.parentNode !== editorEl) node = node.parentNode;
+    if (node !== editorEl) node = wrapLooseLine(node);
     return node;
 }
 
@@ -1200,6 +1706,74 @@ function closeLinkBar(restore) {
         sel.removeAllRanges();
         sel.addRange(linkSavedRange);
     }
+}
+
+function linkTargetText(anchor) {
+    const id = wikiIdFromLink(anchor);
+    if (id) {
+        const page = pages.find((item) => item.id === id);
+        return page ? (page.title || '未命名') : id;
+    }
+    return anchor.getAttribute('href') || '';
+}
+
+function followEditorLink(link) {
+    const href = link.getAttribute('href') || '';
+    if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
+        window.open(link.href, '_blank', 'noopener');
+        return;
+    }
+    const id = wikiIdFromLink(link);
+    if (id) {
+        openPage(id);
+        return;
+    }
+    if (href && href !== '#') window.open(link.href, '_blank', 'noopener');
+}
+
+function editLink(anchor) {
+    if (!editorWritable() || !anchor) return;
+    const existing = document.getElementById('link-input-bar');
+    if (existing) existing.remove();
+    const bar = document.createElement('div');
+    bar.id = 'link-input-bar';
+    bar.className = 'link-bar';
+    bar.innerHTML = '<span>修改链接</span><input id="link-url-input" type="text" placeholder="页面名或 https://"><button type="button" id="link-ok">确定</button>';
+    editorEl.before(bar);
+    const input = bar.querySelector('input');
+    input.value = linkTargetText(anchor);
+    input.focus();
+    input.select();
+    const finish = () => {
+        const value = input.value.trim();
+        bar.remove();
+        if (!value || !anchor.isConnected) return;
+        const page = pages.find((item) => item.id === value || (item.title || '未命名') === value);
+        if (page) {
+            anchor.setAttribute('data-page', page.id);
+            anchor.classList.add('wikilink');
+            anchor.setAttribute('href', '#');
+        } else {
+            const url = safeUrl(value);
+            if (!url) return;
+            anchor.setAttribute('href', url);
+            anchor.removeAttribute('data-page');
+            anchor.classList.remove('wikilink');
+        }
+        scheduleSave();
+        statusEl.textContent = '链接已修改';
+    };
+    bar.querySelector('#link-ok').addEventListener('click', finish);
+    input.addEventListener('keydown', (event) => {
+        event.stopPropagation();
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            finish();
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            bar.remove();
+        }
+    });
 }
 
 function insertLink() {
@@ -1387,12 +1961,30 @@ async function insertAnyFile(file) {
 
 async function insertFiles(files) {
     uploadJob.total = files.length || 1;
+    const ready = [];
     try {
         for (let i = 0; i < files.length; i++) {
+            const file = files[i];
             uploadJob.index = i + 1;
-            uploadJob.name = files[i].name || '文件';
-            await insertAnyFile(files[i]);
+            uploadJob.name = file.name || '文件';
+            if (looksLikeImage(file)) {
+                const prepared = await prepareImage(file);
+                const data = await uploadBlob(prepared);
+                if (data) ready.push(imageHtml(data.url));
+            } else {
+                const data = await uploadBlob(file);
+                if (!data) continue;
+                const name = data.name || file.name || '文件';
+                const label = name + ' (' + formatSize(data.size || file.size) + ')';
+                ready.push(`<a class="file-link" href="${escapeHtml(data.url)}">${escapeHtml(label)}</a>`);
+            }
         }
+        if (!ready.length) return;
+        restoreRange();
+        const html = ready.length > 1 ? ready.map((item) => `<div>${item}</div>`).join('') : ready[0];
+        document.execCommand('insertHTML', false, html);
+        scheduleSave();
+        statusEl.textContent = ready.length > 1 ? '已插入 ' + ready.length + ' 个，每个一行' : (ready[0].startsWith('<img') ? '已插入图片' : '已插入文件');
     } finally {
         hideUploadProgress();
     }
@@ -1693,8 +2285,31 @@ document.getElementById('any-file').addEventListener('change', async (event) => 
 
 document.getElementById('lightbox').addEventListener('click', closeLightbox);
 
-editorEl.addEventListener('input', wrapBareCheckboxes);
+editorEl.addEventListener('compositionstart', () => {
+    editorComposing = true;
+});
+editorEl.addEventListener('compositionend', () => {
+    editorComposing = false;
+    normalizeLooseLines();
+    wrapBareCheckboxes();
+    decorateHeadings();
+});
+editorEl.addEventListener('input', (event) => {
+    if (editorComposing || event.isComposing) return;
+    normalizeLooseLines();
+    wrapBareCheckboxes();
+    decorateHeadings();
+});
 editorEl.addEventListener('click', (event) => {
+    const marker = headingFromMarker(event);
+    if (marker) {
+        event.preventDefault();
+        const url = headingLink(marker);
+        if (!url) return;
+        copyText(url);
+        statusEl.textContent = '已复制标题链接';
+        return;
+    }
     const act = event.target.closest && event.target.closest('[data-act]');
     if (act && editorEl.contains(act)) {
         const block = act.closest('.code-block');
@@ -1732,7 +2347,7 @@ editorEl.addEventListener('click', (event) => {
     const href = link.getAttribute('href') || '';
     if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
         event.preventDefault();
-        window.open(link.href, '_blank', 'noopener');
+        if (!editorWritable() || event.metaKey || event.ctrlKey) window.open(link.href, '_blank', 'noopener');
         return;
     }
     const id = wikiIdFromLink(link);
@@ -1745,15 +2360,45 @@ editorEl.addEventListener('click', (event) => {
     if (event.metaKey || event.ctrlKey) window.open(link.href, '_blank', 'noopener');
 });
 
+editorEl.addEventListener('mousedown', (event) => {
+    if (event.button !== 1) return;
+    const link = event.target.closest && event.target.closest('a');
+    if (link && editorEl.contains(link)) event.preventDefault();
+});
+editorEl.addEventListener('auxclick', (event) => {
+    if (event.button !== 1) return;
+    const link = event.target.closest && event.target.closest('a');
+    if (!link || !editorEl.contains(link)) return;
+    event.preventDefault();
+    followEditorLink(link);
+});
+
+function headingFromMarker(event) {
+    const heading = event.target.closest && event.target.closest('h1, h2, h3, h4');
+    if (!heading || !editorEl.contains(heading)) return null;
+    if (event.target.closest && event.target.closest('.heading-copy')) return heading;
+    const rect = heading.getBoundingClientRect();
+    if (event.clientX <= rect.left + 2) return heading;
+    return null;
+}
+
 editorEl.addEventListener('contextmenu', (event) => {
+    const marker = headingFromMarker(event);
+    const heading = marker || (event.target.closest && event.target.closest('h1, h2, h3, h4'));
+    if (heading && editorEl.contains(heading) && (marker || !headingText(heading))) {
+        event.preventDefault();
+        showHeadingMenu(event.clientX, event.clientY, heading);
+        return;
+    }
     if (!editorWritable()) return;
     const link = event.target.closest && event.target.closest('a');
     if (link && editorEl.contains(link)) {
         event.preventDefault();
         const href = link.getAttribute('href') || '';
         const items = [
-            { label: '复制链接', onClick: () => copyText(href) },
-            { label: '打开链接', onClick: () => window.open(href, '_blank', 'noopener') }
+            { label: '修改链接', onClick: () => editLink(link) },
+            { label: '复制链接', onClick: () => copyText(linkTargetText(link)) },
+            { label: '打开链接', onClick: () => followEditorLink(link) }
         ];
         if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
             items.push({
@@ -1779,7 +2424,7 @@ editorEl.addEventListener('contextmenu', (event) => {
                 statusEl.textContent = '链接已去掉，文件还在';
             }
         });
-        showFloatMenu(event.clientX, event.clientY, items);
+        showFloatMenu(event.clientX, event.clientY, items, link);
         return;
     }
     const img = event.target.closest && event.target.closest('img');
@@ -1825,11 +2470,20 @@ editorEl.addEventListener('contextmenu', (event) => {
             }
         });
     }
-    showFloatMenu(event.clientX, event.clientY, imageItems);
+    showFloatMenu(event.clientX, event.clientY, imageItems, img);
 });
 
 editorEl.addEventListener('paste', async (event) => {
     if (!editorWritable()) return;
+    if (event.shiftKey) {
+        event.preventDefault();
+        const text = event.clipboardData?.getData('text/plain') || '';
+        if (text) {
+            document.execCommand('insertHTML', false, linesToHtml(text));
+            scheduleSave();
+        }
+        return;
+    }
     const files = filesFromClipboard(event.clipboardData);
     if (files.length && !event.shiftKey) {
         event.preventDefault();
@@ -1861,19 +2515,69 @@ editorEl.addEventListener('keydown', (event) => {
         openEmojiPicker();
         return;
     }
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === 'v') {
+    if (event.key === 'Backspace' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        const sel = window.getSelection();
+        const line = sel && sel.isCollapsed ? getLineNode(sel) : null;
+        if (line && line !== editorEl && /^H[1-4]$/.test(line.tagName) && !headingText(line)) {
+            event.preventDefault();
+            deleteNodesUndo([line]);
+            return;
+        }
+        if (line && line !== editorEl && caretAtBlockStart(line, sel)) {
+            const prev = line.previousElementSibling;
+            if (prev && /^H[1-4]$/.test(prev.tagName) && !headingText(prev)) {
+                event.preventDefault();
+                deleteNodesUndo([prev]);
+                return;
+            }
+        }
+    }
+    const headingDigit = /^Digit([1-4])$/.test(event.code) ? event.code.slice(5) : (/^[1-4]$/.test(event.key) ? event.key : '');
+    if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && headingDigit) {
         event.preventDefault();
-        navigator.clipboard.readText().then((text) => {
-            if (!text) return;
-            document.execCommand('insertHTML', false, linesToHtml(text));
-            scheduleSave();
-        }).catch(() => {});
+        applyHeadingLevel(Number(headingDigit));
         return;
+    }
+    if (event.key === ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const sel = window.getSelection();
+        const line = sel && sel.isCollapsed ? getLineNode(sel) : null;
+        if (line && line !== editorEl && !(line.classList && line.classList.contains('code-block')) && sel.rangeCount) {
+            const pre = document.createRange();
+            pre.setStart(line, 0);
+            pre.setEnd(sel.anchorNode, sel.anchorOffset);
+            const marker = pre.toString().replace(/\u00a0/g, ' ');
+            const level = marker.match(/^(#{1,4})$/);
+            if (level) {
+                event.preventDefault();
+                retagHeading(line, level[1].length);
+                return;
+            }
+        }
     }
     if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
         const sel = window.getSelection();
+        const line = sel && sel.rangeCount ? getLineNode(sel) : null;
+        if (line && /^H[1-4]$/.test(line.tagName)) {
+            event.preventDefault();
+            const after = document.createElement('div');
+            const tail = document.createRange();
+            tail.setStart(sel.anchorNode, sel.anchorOffset);
+            tail.setEnd(line, line.childNodes.length);
+            after.appendChild(tail.extractContents());
+            after.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+            if (!after.textContent) after.innerHTML = '<br>';
+            if (!headingText(line)) line.appendChild(document.createElement('br'));
+            line.after(after);
+            const range = document.createRange();
+            range.setStart(after, 0);
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
+            decorateHeadings();
+            scheduleSave();
+            return;
+        }
         if (sel.isCollapsed) {
-            const line = getLineNode(sel);
             const text = line ? line.textContent || '' : '';
             const match = text.match(/^(\d+)\.\s/);
             if (match && line) {
@@ -1971,4 +2675,8 @@ treeHead.addEventListener('drop', (e) => {
 
 if (localStorage.getItem('rbw-side') === 'closed') setSide(false);
 
-refreshAuth().then(() => load(currentId));
+refreshAuth().then(async () => {
+    await load(currentId);
+    await followHeadingLink();
+});
+window.addEventListener('hashchange', () => { followHeadingLink(); });

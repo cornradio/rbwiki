@@ -21,7 +21,8 @@ import {
     trashTree,
     emptyTrash
 } from './data-manager.js';
-import { importVault, suggestVaults } from './obsidian-import.js';
+import { importVault, importPreparedVault, importVaultZip, suggestVaults } from './obsidian-import.js';
+import { archiveObsidian } from './obsidian-export.js';
 import { loadAuth, loadSessions, setPassword, setHomePath, checkPassword, createSession, dropSession, validSession } from './auth.js';
 import { archiveLibrary, importLibrary } from './library.js';
 
@@ -161,6 +162,122 @@ app.post('/api/obsidian/import', async (req, res) => {
     } catch (err) {
         res.status(400).json({ error: err.message || '导入失败' });
     }
+});
+
+function safeUploadRel(rel) {
+    return String(rel || '').replace(/\\/g, '/').split('/').filter((part) => part && part !== '.' && part !== '..').join('/');
+}
+
+const vaultUpload = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+            const dir = path.resolve('wiki-data', 'tmp', 'incoming');
+            fs.mkdirSync(dir, { recursive: true });
+            cb(null, dir);
+        },
+        filename: (req, file, cb) => cb(null, `${Date.now()}-${randomUUID()}`)
+    }),
+    limits: { fieldSize: 32 * 1024 * 1024, files: 20000 }
+});
+
+app.post('/api/obsidian/upload', (req, res) => {
+    if (!guardWrite(req, res)) return;
+    vaultUpload.array('files', 20000)(req, res, async (err) => {
+        const stage = path.resolve('wiki-data', 'tmp', `vault-${Date.now()}-${randomUUID().slice(0, 8)}`);
+        const cleanup = async () => {
+            await fs.promises.rm(stage, { recursive: true, force: true }).catch(() => {});
+            for (const file of req.files || []) fs.promises.unlink(file.path).catch(() => {});
+        };
+        try {
+            if (err || !req.files || !req.files.length) {
+                await cleanup();
+                return res.status(400).json({ error: '没有选择文件' });
+            }
+            let paths = [];
+            try { paths = JSON.parse((req.body && req.body.paths) || '[]'); } catch { paths = []; }
+            if (!Array.isArray(paths) || paths.length !== req.files.length) {
+                await cleanup();
+                return res.status(400).json({ error: '文件列表不完整' });
+            }
+            await fs.promises.mkdir(stage, { recursive: true });
+            for (let i = 0; i < req.files.length; i++) {
+                const rel = safeUploadRel(paths[i]);
+                if (!rel) continue;
+                const dest = path.resolve(stage, rel);
+                if (dest !== path.join(stage, rel)) continue;
+                await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+                try {
+                    await fs.promises.rename(req.files[i].path, dest);
+                } catch {
+                    await fs.promises.copyFile(req.files[i].path, dest);
+                    await fs.promises.unlink(req.files[i].path).catch(() => {});
+                }
+            }
+            const existing = await listPages({ deleted: 'all' });
+            res.json(await importPreparedVault(stage, existing));
+        } catch (error) {
+            if (!res.headersSent) res.status(400).json({ error: error.message || '导入失败' });
+        } finally {
+            await cleanup();
+        }
+    });
+});
+
+app.post('/api/obsidian/zip', (req, res) => {
+    if (!guardWrite(req, res)) return;
+    zipUpload.single('file')(req, res, async (err) => {
+        if (err || !req.file) return res.status(400).json({ error: '需要压缩包' });
+        try {
+            const existing = await listPages({ deleted: 'all' });
+            res.json(await importVaultZip(req.file.path, existing, req.file.originalname));
+        } catch (error) {
+            res.status(400).json({ error: error.message || '导入失败' });
+        } finally {
+            fs.promises.unlink(req.file.path).catch(() => {});
+        }
+    });
+});
+
+function pageSubtree(pages, rootId) {
+    const root = pages.find((page) => page.id === rootId);
+    if (!root) return null;
+    const byParent = new Map();
+    for (const page of pages) {
+        const key = page.parentId || '';
+        if (!byParent.has(key)) byParent.set(key, []);
+        byParent.get(key).push(page);
+    }
+    const out = [root];
+    const walk = (id) => {
+        for (const child of byParent.get(id) || []) {
+            out.push(child);
+            walk(child.id);
+        }
+    };
+    walk(root.id);
+    return out;
+}
+
+function obsidianFilename(title) {
+    const name = String(title || 'rbwiki').replace(/[\\/:*?"<>|\r\n]/g, '_').trim().slice(0, 80) || 'rbwiki';
+    return name + '-obsidian.zip';
+}
+
+app.get('/api/obsidian/export', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const pages = await listPages();
+    const root = String(req.query.root || '');
+    const chosen = root ? pageSubtree(pages, root) : pages;
+    if (!chosen) return res.status(404).json({ error: '没有这个页面' });
+    const filename = obsidianFilename(root ? chosen[0].title : 'rbwiki');
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="vault.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    const archive = archiveObsidian(chosen);
+    archive.on('error', () => {
+        if (!res.headersSent) res.status(500).end();
+        else res.destroy();
+    });
+    archive.pipe(res);
 });
 
 app.get('/api/library/export', async (req, res) => {

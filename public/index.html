@@ -14,7 +14,7 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=18">
+    <link rel="stylesheet" href="/app.css?v=31">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
@@ -51,9 +51,15 @@
     <main class="sheet">
         <button id="unfold" type="button" title="展开目录">目录</button>
         <div class="look" id="theme-switch">
-            <button type="button" data-theme="auto">自动</button>
-            <button type="button" data-theme="light">白</button>
-            <button type="button" data-theme="dark">黑</button>
+            <div class="theme-picks">
+                <aside id="toc" class="toc hidden">
+                    <button type="button" id="toc-toggle" title="收起或展开章节">章节</button>
+                    <div id="toc-list"></div>
+                </aside>
+                <button type="button" data-theme="auto">自动</button>
+                <button type="button" data-theme="light">白</button>
+                <button type="button" data-theme="dark">黑</button>
+            </div>
         </div>
         <div id="trash-banner" class="trash-banner hidden">回收站。右键一篇可以恢复，或永久删除。</div>
         <div id="empty" class="empty hidden">
@@ -126,6 +132,8 @@
         </div>
     </div>
     <div id="menu" class="menu hidden">
+        <button type="button" id="menu-copy" class="hidden">复制</button>
+        <button type="button" id="menu-export" class="hidden">导出 Obsidian</button>
         <button type="button" id="menu-trash">移入回收站</button>
         <button type="button" id="menu-restore" class="hidden">恢复</button>
         <button type="button" id="menu-purge" class="hidden">永久删除</button>
@@ -163,6 +171,7 @@
                         <button type="button" id="import-lib">导入压缩包</button>
                         <input id="lib-file" type="file" accept=".zip,application/zip" hidden>
                         <button type="button" id="open-obsidian">导入 Obsidian</button>
+                        <button type="button" id="export-obsidian">导出 Obsidian</button>
                     </div>
                 </section>
                 <section>
@@ -180,8 +189,16 @@
     <div id="import-dialog" class="dialog hidden">
         <div class="dialog-card">
             <h2>导入 Obsidian</h2>
-            <p>选一个库的文件夹。再导入时会对照上次的内容，只写入新的或改过的笔记，以及新的附件。</p>
-            <input id="vault-path" type="text" placeholder="库文件夹路径" autocomplete="off">
+            <p>从这台电脑选择库文件夹或压缩包，上传到服务器再导入。再导入时会对照上次的内容，只写入新的或改过的笔记，以及新的附件。</p>
+            <div class="dialog-actions start">
+                <button type="button" id="vault-pick">选择本机文件夹</button>
+                <button type="button" id="vault-zip">选择压缩包</button>
+            </div>
+            <input id="vault-folder" type="file" webkitdirectory directory multiple hidden>
+            <input id="vault-zip-file" type="file" accept=".zip,application/zip" hidden>
+            <p id="vault-picked" class="import-msg"></p>
+            <p>库如果就在服务器磁盘上，也可以填服务器上的路径：</p>
+            <input id="vault-path" type="text" placeholder="服务器上的库路径" autocomplete="off">
             <div id="vault-list" class="vault-list"></div>
             <div class="dialog-actions">
                 <button type="button" id="import-cancel">取消</button>
@@ -191,6 +208,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=18"></script>
+    <script src="/app.js?v=33"></script>
 </body>
 </html>

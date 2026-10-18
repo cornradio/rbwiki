@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash, randomUUID } from 'crypto';
+import AdmZip from 'adm-zip';
 import { getUploadsDir, saveImported } from './data-manager.js';
 
 const SKIP = new Set(['.obsidian', '.trash', '.git', 'node_modules']);
@@ -146,13 +147,17 @@ export async function suggestVaults() {
     return found;
 }
 
-export async function importVault(vaultPath, existingPages) {
+export async function importVault(vaultPath, existingPages, options = {}) {
     const vault = path.resolve(vaultPath);
+    const sourceVault = options.vaultKey || vault;
     const info = await fs.stat(vault);
     if (!info.isDirectory()) throw new Error('路径不是文件夹');
+    let hasMarker = false;
     try {
         await fs.access(path.join(vault, '.obsidian'));
-    } catch {
+        hasMarker = true;
+    } catch { hasMarker = false; }
+    if (!hasMarker && options.requireMarker !== false) {
         throw new Error('这个文件夹里没有 .obsidian，不像 Obsidian 库');
     }
 
@@ -168,7 +173,7 @@ export async function importVault(vaultPath, existingPages) {
 
     const bySource = new Map();
     for (const page of existingPages) {
-        if (page.sourceVault === vault && page.sourcePath) bySource.set(page.sourcePath, page);
+        if (page.sourceVault === sourceVault && page.sourcePath) bySource.set(page.sourcePath, page);
     }
 
     const now = Date.now();
@@ -193,7 +198,7 @@ export async function importVault(vaultPath, existingPages) {
 
     async function assetFresh(file) {
         const stat = await fileStat(file);
-        const key = vault + '|' + relKey(vault, file);
+        const key = sourceVault + '|' + relKey(vault, file);
         const prev = manifest[key];
         const mtime = Math.round(stat.mtimeMs);
         const name = assetName(file);
@@ -234,7 +239,7 @@ export async function importVault(vaultPath, existingPages) {
             order: 0,
             createdAt: now,
             updatedAt: now,
-            sourceVault: vault,
+            sourceVault,
             sourcePath,
             sourceHash: '',
             deletedAt: null
@@ -322,7 +327,7 @@ export async function importVault(vaultPath, existingPages) {
         const stat = await fileStat(file);
         const name = assetName(file);
         await fs.copyFile(file, path.join(uploads, name));
-        manifest[vault + '|' + relKey(vault, file)] = {
+        manifest[sourceVault + '|' + relKey(vault, file)] = {
             size: stat.size,
             mtime: Math.round(stat.mtimeMs),
             name
@@ -341,11 +346,67 @@ export async function importVault(vaultPath, existingPages) {
         }
         orders.set(key, order + 1);
     }
+    if (!notes.length) throw new Error('没有找到 Markdown 笔记');
     for (const page of dirty) {
         if (page.deletedAt) continue;
         await saveImported(page);
     }
     await fs.mkdir(path.dirname(manifestPath), { recursive: true });
     await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf-8');
-    return { vault, pages: pages.length, notes: notePages.length, added, changed, skipped, images };
+    return { vault: sourceVault, pages: pages.length, notes: notePages.length, added, changed, skipped, images };
+}
+
+function safeRel(rel) {
+    return String(rel || '').replace(/\\/g, '/').split('/').filter((part) => part && part !== '.' && part !== '..').join('/');
+}
+
+async function hasMarkdown(dir) {
+    const files = [];
+    await walk(dir, files);
+    return files.some((file) => file.toLowerCase().endsWith('.md'));
+}
+
+async function findVaultDir(dir, depth = 0) {
+    let entries = [];
+    try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return ''; }
+    if (entries.some((entry) => entry.isDirectory() && entry.name === '.obsidian')) return dir;
+    const dirs = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
+    const files = entries.filter((entry) => entry.isFile());
+    if (files.some((entry) => entry.name.toLowerCase().endsWith('.md'))) return dir;
+    if (depth < 3 && dirs.length === 1 && files.length === 0) {
+        const nested = await findVaultDir(path.join(dir, dirs[0].name), depth + 1);
+        if (nested) return nested;
+    }
+    if (await hasMarkdown(dir)) return dir;
+    return '';
+}
+
+export async function importPreparedVault(root, existingPages, vaultKey) {
+    const vaultDir = await findVaultDir(root);
+    if (!vaultDir) throw new Error('没有找到 Markdown 笔记');
+    return importVault(vaultDir, existingPages, {
+        vaultKey: vaultKey || ('local:' + path.basename(vaultDir)),
+        requireMarker: false
+    });
+}
+
+export async function importVaultZip(zipPath, existingPages, originalName) {
+    const stage = path.resolve('wiki-data', 'tmp', `vaultzip-${Date.now()}`);
+    await fs.mkdir(stage, { recursive: true });
+    try {
+        const zip = new AdmZip(zipPath);
+        for (const entry of zip.getEntries()) {
+            if (entry.isDirectory) continue;
+            const rel = safeRel(entry.entryName);
+            if (!rel) continue;
+            const dest = path.resolve(stage, rel);
+            if (dest !== path.join(stage, rel)) continue;
+            await fs.mkdir(path.dirname(dest), { recursive: true });
+            await fs.writeFile(dest, entry.getData());
+        }
+        const label = path.basename(String(originalName || 'upload'), path.extname(String(originalName || 'upload'))) || 'upload';
+        return await importPreparedVault(stage, existingPages, 'local:' + label);
+    } finally {
+        await fs.rm(stage, { recursive: true, force: true });
+    }
 }

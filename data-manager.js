@@ -89,25 +89,59 @@ export async function trashPage(id) {
 }
 
 export async function restorePage(id) {
-    const page = await getPage(id);
-    page.deletedAt = null;
-    page.updatedAt = Date.now();
-    await atomicWrite(pagePath(id), page);
-    return page;
+    const all = await listPages({ deleted: 'all' });
+    const target = all.find((page) => page.id === id);
+    if (!target) throw new Error('not found');
+    const ids = new Set([id]);
+    let grew = true;
+    while (grew) {
+        grew = false;
+        for (const page of all) {
+            if (page.parentId && ids.has(page.parentId) && !ids.has(page.id)) {
+                ids.add(page.id);
+                grew = true;
+            }
+        }
+    }
+    let parentId = target.parentId;
+    const seen = new Set([id]);
+    while (parentId && !seen.has(parentId)) {
+        seen.add(parentId);
+        const parent = all.find((page) => page.id === parentId);
+        if (!parent) break;
+        if (parent.deletedAt) ids.add(parent.id);
+        parentId = parent.parentId;
+    }
+    const now = Date.now();
+    let count = 0;
+    for (const pageId of ids) {
+        const page = all.find((item) => item.id === pageId);
+        if (!page || !page.deletedAt) continue;
+        page.deletedAt = null;
+        page.updatedAt = now;
+        await atomicWrite(pagePath(page.id), page);
+        count += 1;
+    }
+    return { ok: true, id, count };
 }
 
 export async function purgePage(id) {
     const pages = await listPages({ deleted: 'all' });
     const target = pages.find((p) => p.id === id);
     if (!target || !target.deletedAt) return { ok: false };
-    const children = pages.filter((p) => p.parentId === id);
-    for (const child of children) {
-        child.parentId = target.parentId || null;
-        child.updatedAt = Date.now();
-        await atomicWrite(pagePath(child.id), child);
+    const ids = new Set([id]);
+    let grew = true;
+    while (grew) {
+        grew = false;
+        for (const page of pages) {
+            if (page.parentId && ids.has(page.parentId) && !ids.has(page.id)) {
+                ids.add(page.id);
+                grew = true;
+            }
+        }
     }
-    await fs.unlink(pagePath(id));
-    return { ok: true };
+    for (const pageId of ids) await fs.unlink(pagePath(pageId));
+    return { ok: true, count: ids.size };
 }
 
 export async function ensureShareToken(id) {
