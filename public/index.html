@@ -14,7 +14,7 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=31">
+    <link rel="stylesheet" href="/app.css?v=35">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
@@ -52,7 +52,7 @@
         <button id="unfold" type="button" title="展开目录">目录</button>
         <div class="look" id="theme-switch">
             <div class="theme-picks">
-                <aside id="toc" class="toc hidden">
+                <aside id="toc" class="toc collapsed hidden">
                     <button type="button" id="toc-toggle" title="收起或展开章节">章节</button>
                     <div id="toc-list"></div>
                 </aside>
@@ -91,7 +91,7 @@
                 <input id="title" class="title" type="text" placeholder="无标题" autocomplete="off">
                 <div class="title-actions">
                     <button id="locate" type="button" title="在目录里定位">定位</button>
-                    <button id="copy-link" type="button" title="复制这篇的分享链接">分享</button>
+                    <button id="copy-link" type="button" title="分享这篇">分享</button>
                     <button id="trash-page" type="button" title="移入回收站">删除</button>
                 </div>
             </div>
@@ -208,6 +208,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=33"></script>
+    <script src="/app.js?v=38"></script>
 </body>
 </html>

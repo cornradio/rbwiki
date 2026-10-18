@@ -391,7 +391,6 @@ app.get('/api/pages/:id', async (req, res) => {
 });
 
 app.post('/api/pages/:id/share', async (req, res) => {
-    if (!guardWrite(req, res)) return;
     try {
         const page = await ensureShareToken(req.params.id);
         res.json({ path: `/${auth.shareSpace}/${page.shareToken}` });

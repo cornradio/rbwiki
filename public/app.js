@@ -136,7 +136,7 @@ function applyLock() {
     const locked = !canWrite || trashMode;
     titleEl.readOnly = locked;
     editorEl.contentEditable = locked ? 'false' : 'true';
-    document.getElementById('copy-link').classList.toggle('hidden', !canWrite || trashMode);
+    document.getElementById('copy-link').classList.toggle('hidden', trashMode);
     document.getElementById('trash-page').classList.toggle('hidden', !canWrite || trashMode);
     document.body.classList.toggle('trash', trashMode);
     document.getElementById('trash-banner').classList.toggle('hidden', !trashMode);
@@ -548,15 +548,278 @@ editorEl.addEventListener('keyup', rememberRange);
 editorEl.addEventListener('mouseup', rememberRange);
 window.addEventListener('beforeunload', () => { if (saveTimer) flushSave(); });
 
-document.getElementById('copy-link').addEventListener('click', async () => {
-    const page = pages.find((p) => p.id === currentId);
-    if (!page) return;
-    const res = await api('/api/pages/' + page.id + '/share', { method: 'POST' });
-    if (!res.ok) return;
+document.getElementById('copy-link').addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!currentId) return;
+    showFloatMenu(event.clientX, event.clientY, [
+        { label: '分享当前链接', onClick: shareCurrentLink },
+        { label: '生成只读链接', onClick: shareReadLink },
+        { label: '分享为富文本', onClick: shareRichText },
+        { label: '分享为 HTML', onClick: shareHtmlFile },
+        { label: '分享为 PDF', onClick: sharePdf }
+    ]);
+});
+
+function currentPageLink() {
+    return location.origin + location.pathname + location.search + '#' + currentId;
+}
+
+async function shareCurrentLink() {
+    await copyText(currentPageLink());
+    statusEl.textContent = '已复制当前链接';
+}
+
+async function shareReadLink() {
+    const res = await fetch('/api/pages/' + currentId + '/share', { method: 'POST' });
+    if (!res.ok) {
+        statusEl.textContent = '只读链接没有生成';
+        return;
+    }
     const data = await res.json();
     await copyText(location.origin + data.path);
-    statusEl.textContent = '已复制分享链接';
-});
+    statusEl.textContent = '已复制只读链接';
+}
+
+function exportRoot() {
+    const clone = editorEl.cloneNode(true);
+    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
+    clone.querySelectorAll('[data-hid], [data-cursor-ref]').forEach((node) => {
+        node.removeAttribute('data-hid');
+        node.removeAttribute('data-cursor-ref');
+    });
+    clone.querySelectorAll('.context-target').forEach((node) => node.classList.remove('context-target'));
+    clone.querySelectorAll('img, a').forEach((node) => {
+        const attr = node.tagName === 'IMG' ? 'src' : 'href';
+        const value = stripUploadCache(node.getAttribute(attr) || '');
+        if (value.startsWith('/')) node.setAttribute(attr, location.origin + value);
+    });
+    return clone;
+}
+
+function shareDocument(title, bodyHtml) {
+    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:32px 24px 64px;line-height:1.7;color:#1c1915;}h1{font-size:28px;line-height:1.3;}h2{font-size:22px;}h3{font-size:18px;}img{max-width:100%;height:auto;}a{color:#c4552a;}pre{white-space:pre-wrap;background:#f3eee6;padding:10px 12px;border-radius:8px;}</style></head><body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`;
+}
+
+function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function inlineExportImages(root) {
+    const images = [...root.querySelectorAll('img')];
+    await Promise.all(images.map(async (img) => {
+        try {
+            const res = await fetch(img.src);
+            if (!res.ok) return;
+            img.src = await blobToDataUrl(await res.blob());
+        } catch (e) {}
+    }));
+}
+
+function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportFileName(title, ext) {
+    const safe = String(title || '未命名').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 80) || '未命名';
+    return safe + '.' + ext;
+}
+
+function prepareRichRoot() {
+    const root = exportRoot();
+    root.querySelectorAll('a').forEach((anchor) => {
+        const pageId = anchor.getAttribute('data-page');
+        let href = stripUploadCache(anchor.getAttribute('href') || '');
+        if (pageId) href = location.origin + location.pathname + location.search + '#' + pageId;
+        else if (href.startsWith('/')) href = location.origin + href;
+        if (href && href !== '#') anchor.setAttribute('href', href);
+        else anchor.replaceWith(document.createTextNode(anchor.textContent || ''));
+        anchor.removeAttribute('data-page');
+        anchor.removeAttribute('class');
+    });
+    return root;
+}
+
+function inlineBits(node) {
+    let html = '';
+    let plain = '';
+    node.childNodes.forEach((child) => {
+        if (child.nodeType === 3) {
+            html += escapeHtml(child.textContent);
+            plain += child.textContent;
+            return;
+        }
+        if (child.nodeType !== 1) return;
+        const tag = child.tagName;
+        if (tag === 'BR') {
+            html += '<br>';
+            plain += '\n';
+            return;
+        }
+        if (tag === 'IMG') {
+            const src = child.getAttribute('src') || '';
+            const alt = child.getAttribute('alt') || '';
+            const style = child.getAttribute('style') || 'max-width:100%;height:auto;';
+            html += `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" style="${escapeHtml(style)}">`;
+            plain += alt || '[图片]';
+            return;
+        }
+        if (tag === 'A') {
+            const href = child.getAttribute('href') || '';
+            const inner = inlineBits(child);
+            html += href ? `<a href="${escapeHtml(href)}">${inner.html}</a>` : inner.html;
+            plain += inner.plain + (href ? ' (' + href + ')' : '');
+            return;
+        }
+        if (tag === 'B' || tag === 'STRONG' || tag === 'I' || tag === 'EM' || tag === 'U') {
+            const inner = inlineBits(child);
+            html += `<${tag.toLowerCase()}>${inner.html}</${tag.toLowerCase()}>`;
+            plain += inner.plain;
+            return;
+        }
+        const color = child.style && child.style.color;
+        const inner = inlineBits(child);
+        html += color ? `<span style="color:${escapeHtml(color)}">${inner.html}</span>` : inner.html;
+        plain += inner.plain;
+    });
+    return { html, plain };
+}
+
+function renderRich(root) {
+    const htmlParts = [];
+    const plainParts = [];
+    [...root.childNodes].forEach((node) => {
+        if (node.nodeType === 3) {
+            const text = node.textContent.replace(/\u00a0/g, ' ');
+            if (!text.trim()) return;
+            htmlParts.push(`<p>${escapeHtml(text)}</p>`);
+            plainParts.push(text);
+            return;
+        }
+        if (node.nodeType !== 1) return;
+        if (node.tagName === 'IMG') {
+            const holder = document.createElement('div');
+            holder.appendChild(node.cloneNode(true));
+            const inline = inlineBits(holder);
+            htmlParts.push(`<p>${inline.html}</p>`);
+            plainParts.push(inline.plain);
+            return;
+        }
+        if (node.classList.contains('code-block') || node.tagName === 'PRE') {
+            const text = (node.querySelector('pre') || node).textContent || '';
+            htmlParts.push(`<pre>${escapeHtml(text)}</pre>`);
+            plainParts.push(text);
+            return;
+        }
+        const tag = /^H[1-4]$/.test(node.tagName) ? node.tagName.toLowerCase() : 'p';
+        const inline = inlineBits(node);
+        htmlParts.push(`<${tag}>${inline.html || '<br>'}</${tag}>`);
+        plainParts.push(inline.plain.replace(/\u00a0/g, ' ').trim() ? inline.plain : '');
+    });
+    const title = (titleEl.value || '').trim();
+    let html = htmlParts.join('');
+    let plain = plainParts.join('\n');
+    if (title) {
+        html = `<h1>${escapeHtml(title)}</h1>` + html;
+        plain = title + '\n\n' + plain;
+    }
+    return {
+        html: `<html><body><!--StartFragment-->${html}<!--EndFragment--></body></html>`,
+        plain
+    };
+}
+
+async function buildRichClipboard() {
+    const root = prepareRichRoot();
+    await inlineExportImages(root);
+    return renderRich(root);
+}
+
+function copyHtmlBySelection(html) {
+    const holder = document.createElement('div');
+    holder.contentEditable = 'true';
+    holder.style.cssText = 'position:fixed;left:-9999px;top:0;';
+    holder.innerHTML = html;
+    document.body.appendChild(holder);
+    const range = document.createRange();
+    range.selectNodeContents(holder);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    sel.removeAllRanges();
+    holder.remove();
+    return ok;
+}
+
+function shareRichText() {
+    const job = buildRichClipboard();
+    let pending;
+    try {
+        pending = navigator.clipboard.write([new ClipboardItem({
+            'text/html': job.then(({ html }) => new Blob([html], { type: 'text/html' })),
+            'text/plain': job.then(({ plain }) => new Blob([plain], { type: 'text/plain' }))
+        })]);
+    } catch (e) {
+        pending = Promise.reject(e);
+    }
+    return pending.then(() => {
+        statusEl.textContent = '已复制富文本';
+    }).catch(async () => {
+        const { html, plain } = await job;
+        if (copyHtmlBySelection(html)) statusEl.textContent = '已复制富文本';
+        else {
+            await copyText(plain);
+            statusEl.textContent = '富文本没复制成，已改为带换行的纯文本';
+        }
+    });
+}
+
+async function shareHtmlFile() {
+    const title = titleEl.value || '未命名';
+    const root = exportRoot();
+    await inlineExportImages(root);
+    const blob = new Blob([shareDocument(title, root.innerHTML)], { type: 'text/html;charset=utf-8' });
+    downloadBlob(blob, exportFileName(title, 'html'));
+    statusEl.textContent = '已下载 HTML';
+}
+
+async function sharePdf() {
+    const title = titleEl.value || '未命名';
+    const root = exportRoot();
+    await inlineExportImages(root);
+    const frame = document.createElement('iframe');
+    frame.style.cssText = 'position:fixed;left:0;top:0;width:794px;height:100vh;border:0;opacity:0;pointer-events:none;';
+    document.body.appendChild(frame);
+    const doc = frame.contentDocument;
+    doc.open();
+    doc.write(shareDocument(title, root.innerHTML));
+    doc.close();
+    const style = doc.createElement('style');
+    style.textContent = '@page{size:A4;margin:14mm;}';
+    doc.head.appendChild(style);
+    doc.title = title;
+    await Promise.all([...doc.images].map((img) => (img.complete ? null : new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve;
+    }))));
+    const cleanup = () => { try { frame.remove(); } catch (e) {} };
+    frame.contentWindow.addEventListener('afterprint', cleanup);
+    setTimeout(cleanup, 60000);
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+    statusEl.textContent = '已打开打印，可另存为 PDF';
+}
 
 document.getElementById('trash-page').addEventListener('click', async () => {
     const page = pages.find((p) => p.id === currentId);
@@ -1325,6 +1588,9 @@ function deleteNodesUndo(nodes) {
     scheduleSave();
 }
 
+let tocOpen = false;
+let tocPageId = null;
+
 function renderToc() {
     const box = document.getElementById('toc');
     const list = document.getElementById('toc-list');
@@ -1335,8 +1601,12 @@ function renderToc() {
         list.innerHTML = '';
         return;
     }
+    if (tocPageId !== currentId) {
+        tocPageId = currentId;
+        tocOpen = false;
+    }
     box.classList.remove('hidden');
-    box.classList.toggle('collapsed', editorWritable() && localStorage.getItem('rbw-toc') === '0');
+    box.classList.toggle('collapsed', !tocOpen);
     list.innerHTML = '';
     headings.forEach((heading) => {
         const item = document.createElement('button');
@@ -1354,10 +1624,8 @@ function renderToc() {
 }
 
 document.getElementById('toc-toggle').addEventListener('click', () => {
-    const box = document.getElementById('toc');
-    const collapsed = !box.classList.contains('collapsed');
-    box.classList.toggle('collapsed', collapsed);
-    localStorage.setItem('rbw-toc', collapsed ? '0' : '1');
+    tocOpen = !tocOpen;
+    document.getElementById('toc').classList.toggle('collapsed', !tocOpen);
 });
 
 function showHeadingMenu(x, y, heading) {

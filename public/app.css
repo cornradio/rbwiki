@@ -43,7 +43,7 @@ body {
     display: flex;
     background: var(--paper);
     color: var(--ink);
-    font: 15px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Heiti SC", "Microsoft YaHei", sans-serif;
 }
 
 .sidebar {
@@ -86,16 +86,19 @@ body {
 #unfold {
     display: none;
     position: fixed;
-    top: 12px;
+    top: 10px;
     left: 12px;
     z-index: 8;
-    height: 32px;
-    padding: 0 12px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--sheet);
-    color: var(--ink);
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+    height: auto;
+    padding: 3px 9px;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    box-shadow: none;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
 }
 .brand img { border-radius: 4px; }
 .search-row { padding: 8px 12px 4px; }
@@ -300,7 +303,7 @@ body.files-mode #toc { display: none !important; }
 .page, .empty {
     max-width: 760px;
     margin: 0 auto;
-    padding: 48px 32px 80px;
+    padding: 48px 32px 80px 72px;
 }
 .empty { color: var(--muted); }
 body.files-mode .tree-head,
@@ -378,7 +381,7 @@ body.files-mode #trash-banner { display: none !important; }
     width: auto;
     border: 0;
     background: transparent;
-    font: 700 34px/1.25 "Palatino Linotype", "Songti SC", "SimSun", serif;
+    font: 700 34px/1.25 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "STSong", "PingFang SC", "Hiragino Sans GB", "SimSun", serif;
     color: var(--ink);
     padding: 0;
     margin: 0;
@@ -457,6 +460,10 @@ body.files-mode #trash-banner { display: none !important; }
     outline: none;
     color: var(--ink);
     white-space: pre-wrap;
+    white-space: break-spaces;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
 }
 .editor h1, .editor h2, .editor h3, .editor h4 { position: relative; font-weight: 650; line-height: 1.35; }
 .editor h1 { font-size: 28px; margin: 1.15em 0 0.4em; }
@@ -468,7 +475,8 @@ body.files-mode #trash-banner { display: none !important; }
 .editor h3::before,
 .editor h4::before {
     position: absolute;
-    right: 100%;
+    left: -52px;
+    width: 46px;
     top: 0.12em;
     min-width: 28px;
     height: 22px;
@@ -478,8 +486,8 @@ body.files-mode #trash-banner { display: none !important; }
     font-size: 12px;
     font-weight: 400;
     line-height: 22px;
-    padding: 0 8px 0 4px;
-    text-align: center;
+    padding: 0 6px 0 0;
+    text-align: right;
     opacity: 0.4;
 }
 .editor h1::before { content: '#1'; }
@@ -527,12 +535,14 @@ body.files-mode #trash-banner { display: none !important; }
     padding: 10px 12px;
     background: transparent;
     white-space: pre-wrap;
-    font-family: Consolas, "Cascadia Mono", monospace;
+    white-space: break-spaces;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
     font-size: 13px;
     outline: none;
 }
 .editor pre, .editor code {
-    font-family: Consolas, "Cascadia Mono", monospace;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
     font-size: 13px;
 }
 .editor pre {
@@ -623,6 +633,7 @@ body.files-mode #trash-banner { display: none !important; }
     font-size: 13px;
     padding: 7px 12px;
     cursor: pointer;
+    white-space: nowrap;
 }
 .float-menu button:hover { background: var(--wash); }
 .float-menu button.danger { color: var(--danger); }
@@ -790,7 +801,19 @@ body.locked #fold-all { display: none; }
 .sheet { position: relative; }
 body.side-collapsed .sidebar { width: 0; min-width: 0; overflow: hidden; }
 body.side-collapsed #unfold { display: inline-flex; align-items: center; justify-content: center; }
-body.side-collapsed .title-row { padding-left: 36px; }
+@media (max-width: 720px) {
+    .sidebar {
+        position: fixed;
+        inset: 0 auto 0 0;
+        z-index: 20;
+        width: min(280px, 86vw);
+    }
+    body.side-collapsed .sidebar { width: 0; }
+    .sheet { width: 100%; }
+    .page, .empty { padding: 52px 16px 72px 56px; }
+    .files { padding: 28px 16px 72px; }
+    .theme-picks { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+}
 .tree-head { display: flex; align-items: center; gap: 8px; }
 .tree-head span { flex: 1; }
 #fold-all {
