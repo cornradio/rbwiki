@@ -65,6 +65,8 @@ function renderInline(node, ctx) {
         const name = uploadName(node.attrs.src);
         if (name) {
             ctx.uploads.add(name);
+            const href = attachmentHref(ctx, name);
+            if (ctx.style === 'markdown') return `![${(node.attrs && node.attrs.alt) || ''}](${href})`;
             return `![[attachments/${name}]]`;
         }
         const src = (node.attrs && node.attrs.src) || '';
@@ -76,12 +78,16 @@ function renderInline(node, ctx) {
         const pageId = node.attrs['data-page'];
         if (classHas(node, 'wikilink') && pageId && ctx.linkFor(pageId)) {
             const target = ctx.linkFor(pageId);
+            if (ctx.style === 'markdown') {
+                const href = relativeNote(ctx.notePath, target + '.md');
+                return `[${label || target}](${href})`;
+            }
             return label && label !== target ? `[[${target}|${label}]]` : `[[${target}]]`;
         }
         const file = uploadName(node.attrs.href);
         if (file) {
             ctx.uploads.add(file);
-            return `[${label || file}](attachments/${file})`;
+            return `[${label || file}](${attachmentHref(ctx, file)})`;
         }
         const href = node.attrs.href || '';
         if (!href || href === '#') return label;
@@ -129,7 +135,11 @@ function renderBlocks(nodes, ctx) {
             out.push(text.split('\n').map((line) => '> ' + line).join('\n'));
             return;
         }
-        if (node.tag === 'p' || node.tag === 'div' || node.tag === 'li' || node.tag === 'img' || node.tag === 'a' || node.tag === 'span') {
+        if (node.tag === 'p' || node.tag === 'div') {
+            out.push(renderInline(node, ctx).replace(/\u00a0/g, ' ').trim());
+            return;
+        }
+        if (node.tag === 'li' || node.tag === 'img' || node.tag === 'a' || node.tag === 'span') {
             const text = renderInline(node, ctx).trim();
             if (text) out.push(text);
             return;
@@ -140,12 +150,27 @@ function renderBlocks(nodes, ctx) {
     return out.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function attachmentHref(ctx, name) {
+    if (ctx.style !== 'markdown' || !ctx.notePath) return 'attachments/' + name;
+    const depth = ctx.notePath.split('/').length - 1;
+    return '../'.repeat(depth) + 'attachments/' + name;
+}
+
+function relativeNote(fromPath, toPath) {
+    const from = String(fromPath || '').split('/').slice(0, -1);
+    const to = String(toPath || '').split('/');
+    let shared = 0;
+    while (shared < from.length && shared < to.length - 1 && from[shared] === to[shared]) shared += 1;
+    const parts = [...Array(from.length - shared).fill('..'), ...to.slice(shared)];
+    return parts.join('/') || to[to.length - 1];
+}
+
 function safeSegment(title) {
     const name = String(title || '未命名').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '未命名';
     return name.slice(0, 80);
 }
 
-export function buildObsidianVault(pages) {
+export function buildObsidianVault(pages, options) {
     const live = (pages || []).filter((page) => page && !page.deletedAt);
     const byId = new Map(live.map((page) => [page.id, page]));
     const childCount = new Map();
@@ -188,18 +213,20 @@ export function buildObsidianVault(pages) {
         return rel ? rel.replace(/\.md$/, '') : '';
     };
     const uploads = new Set();
+    const style = options && options.style === 'markdown' ? 'markdown' : 'obsidian';
     const notes = ordered.map((page) => {
         const tree = parseHtml(page.content || '');
-        const markdown = renderBlocks(tree.children, { uploads, linkFor });
-        return { path: pathFor.get(page.id), markdown };
+        const notePath = pathFor.get(page.id);
+        const markdown = renderBlocks(tree.children, { uploads, linkFor, style, notePath });
+        return { path: notePath, markdown };
     });
     return { notes, uploads: [...uploads] };
 }
 
-export function archiveObsidian(pages) {
-    const built = buildObsidianVault(pages);
+function archiveNotes(pages, style) {
+    const built = buildObsidianVault(pages, { style });
     const archive = archiver('zip', { zlib: { level: 1 } });
-    archive.append('{}\n', { name: '.obsidian/app.json' });
+    if (style !== 'markdown') archive.append('{}\n', { name: '.obsidian/app.json' });
     for (const note of built.notes) archive.append(note.markdown + '\n', { name: note.path });
     const uploads = getUploadsDir();
     for (const name of built.uploads) {
@@ -208,4 +235,12 @@ export function archiveObsidian(pages) {
     }
     archive.finalize();
     return archive;
+}
+
+export function archiveObsidian(pages) {
+    return archiveNotes(pages, 'obsidian');
+}
+
+export function archiveMarkdown(pages) {
+    return archiveNotes(pages, 'markdown');
 }

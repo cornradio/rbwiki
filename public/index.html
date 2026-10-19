@@ -14,7 +14,7 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=35">
+    <link rel="stylesheet" href="/app.css?v=36">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
@@ -78,7 +78,7 @@
                     <tr>
                         <th></th>
                         <th>文件</th>
-                        <th class="num">大小</th>
+                        <th class="num"><button type="button" id="files-sort-size">大小</button></th>
                         <th class="num">引用</th>
                         <th></th>
                     </tr>
@@ -98,6 +98,9 @@
             <div class="toolbar">
                 <label class="toolbar-btn" id="tb-color-label" title="文字颜色。右键再用上次的颜色">A
                     <input type="color" id="tb-color" value="#c4552a">
+                </label>
+                <label class="toolbar-btn" id="tb-bg-label" title="背景颜色。右键再用上次的颜色">A
+                    <input type="color" id="tb-bg" value="#ffe08a">
                 </label>
                 <button type="button" class="toolbar-btn" id="tb-clear-color" title="清除格式。按住 Shift 再点，清整篇并保留图片">A₀</button>
                 <button type="button" class="toolbar-btn" id="tb-checkbox" title="插入复选框">✅</button>
@@ -172,6 +175,7 @@
                         <input id="lib-file" type="file" accept=".zip,application/zip" hidden>
                         <button type="button" id="open-obsidian">导入 Obsidian</button>
                         <button type="button" id="export-obsidian">导出 Obsidian</button>
+                        <button type="button" id="export-markdown">导出 Markdown</button>
                     </div>
                 </section>
                 <section>
@@ -208,6 +212,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=38"></script>
+    <script src="/app.js?v=40"></script>
 </body>
 </html>

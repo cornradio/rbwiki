@@ -22,7 +22,7 @@ import {
     emptyTrash
 } from './data-manager.js';
 import { importVault, importPreparedVault, importVaultZip, suggestVaults } from './obsidian-import.js';
-import { archiveObsidian } from './obsidian-export.js';
+import { archiveObsidian, archiveMarkdown } from './obsidian-export.js';
 import { loadAuth, loadSessions, setPassword, setHomePath, checkPassword, createSession, dropSession, validSession } from './auth.js';
 import { archiveLibrary, importLibrary } from './library.js';
 
@@ -273,6 +273,19 @@ app.get('/api/obsidian/export', async (req, res) => {
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="vault.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
     const archive = archiveObsidian(chosen);
+    archive.on('error', () => {
+        if (!res.headersSent) res.status(500).end();
+        else res.destroy();
+    });
+    archive.pipe(res);
+});
+
+app.get('/api/markdown/export', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const pages = await listPages();
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="rbwiki-markdown.zip"; filename*=UTF-8''${encodeURIComponent('rbwiki-markdown.zip')}`);
+    const archive = archiveMarkdown(pages);
     archive.on('error', () => {
         if (!res.headersSent) res.status(500).end();
         else res.destroy();
@@ -572,9 +585,17 @@ app.get('/api/uploads', async (req, res) => {
         const stat = fs.statSync(path.join(dir, name));
         let refs = 0;
         let label = '';
+        const usedBy = [];
         for (const page of pages) {
-            refs += uploadRefCount(page.content, name);
+            const count = uploadRefCount(page.content, name);
+            if (!count) continue;
+            refs += count;
             if (!label) label = uploadLabel(page.content, name);
+            usedBy.push({
+                id: page.id,
+                title: page.title || '未命名',
+                deleted: !!page.deletedAt
+            });
         }
         return {
             name,
@@ -582,6 +603,7 @@ app.get('/api/uploads', async (req, res) => {
             size: stat.size,
             mtime: stat.mtimeMs,
             refs,
+            usedBy,
             label: label || name
         };
     });

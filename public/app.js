@@ -245,13 +245,28 @@ function row(page) {
     });
     el.addEventListener('dragover', (e) => {
         e.preventDefault();
-        el.classList.add('drop');
+        e.stopPropagation();
+        const where = dropWhere(e, el);
+        el.classList.remove('drop', 'drop-before', 'drop-after');
+        el.classList.add(where === 'inside' ? 'drop' : where === 'before' ? 'drop-before' : 'drop-after');
+        el.dataset.drop = where;
     });
-    el.addEventListener('dragleave', () => el.classList.remove('drop'));
+    el.addEventListener('dragleave', () => {
+        el.classList.remove('drop', 'drop-before', 'drop-after');
+    });
     el.addEventListener('drop', (e) => {
         e.preventDefault();
-        el.classList.remove('drop');
-        movePage(e.dataTransfer.getData('text/plain'), page.id);
+        e.stopPropagation();
+        el.classList.remove('drop', 'drop-before', 'drop-after');
+        const where = el.dataset.drop || 'inside';
+        const dragged = e.dataTransfer.getData('text/plain');
+        if (where === 'inside') {
+            placePage(dragged, page.id, Number.MAX_SAFE_INTEGER);
+            return;
+        }
+        const siblings = childrenOf(page.parentId || null).filter((item) => item.id !== dragged);
+        const at = siblings.findIndex((item) => item.id === page.id);
+        placePage(dragged, page.parentId || null, at + (where === 'after' ? 1 : 0));
     });
     return el;
 }
@@ -316,18 +331,56 @@ async function createPage(parentId) {
     titleEl.select();
 }
 
+function dropWhere(event, el) {
+    const rect = el.getBoundingClientRect();
+    const ratio = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+    if (ratio < 0.28) return 'before';
+    if (ratio > 0.72) return 'after';
+    return 'inside';
+}
+
+async function writeOrder(ordered) {
+    for (let i = 0; i < ordered.length; i++) {
+        if ((ordered[i].order || 0) === i) continue;
+        const res = await api('/api/pages/' + ordered[i].id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ order: i })
+        });
+        if (res.ok) ordered[i].order = i;
+    }
+}
+
+async function placePage(id, parentId, index) {
+    if (!canWrite || !id) return;
+    const nextParent = parentId || null;
+    if (id === nextParent || (nextParent && descendantIds(id).includes(nextParent))) return;
+    const page = pages.find((item) => item.id === id);
+    if (!page) return;
+    const oldParent = page.parentId || null;
+    const siblings = childrenOf(nextParent).filter((item) => item.id !== id);
+    const at = Math.max(0, Math.min(Number.isFinite(index) ? index : siblings.length, siblings.length));
+    siblings.splice(at, 0, page);
+    if ((page.parentId || null) !== nextParent) {
+        statusEl.textContent = '移动中…';
+        const res = await api('/api/pages/' + id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parentId: nextParent, order: at })
+        });
+        if (!res.ok) return;
+        page.parentId = nextParent;
+        page.order = at;
+    }
+    await writeOrder(siblings);
+    if (oldParent !== nextParent) await writeOrder(childrenOf(oldParent));
+    renderTree();
+    statusEl.textContent = '已调整顺序';
+}
+
 async function movePage(id, parentId) {
-    if (!canWrite || !id || id === parentId) return;
-    if (parentId && descendantIds(id).includes(parentId)) return;
-    const page = pages.find((p) => p.id === id);
-    if (!page || (page.parentId || null) === (parentId || null)) return;
-    statusEl.textContent = '移动中…';
-    const res = await api('/api/pages/' + id, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parentId: parentId || null })
-    });
-    if (res.ok) await load(currentId);
+    const siblings = childrenOf(parentId || null).filter((item) => item.id !== id);
+    await placePage(id, parentId || null, siblings.length);
 }
 
 function scheduleSave() {
@@ -833,6 +886,7 @@ document.getElementById('trash-page').addEventListener('click', async () => {
 
 let viewMode = 'lib';
 let fileRows = [];
+let fileSort = 'time';
 
 async function setView(mode) {
     if (viewMode === mode && mode !== 'files') return;
@@ -855,7 +909,10 @@ async function setView(mode) {
 
 function visibleFiles() {
     const zeroOnly = document.getElementById('files-zero').checked;
-    return fileRows.filter((row) => !zeroOnly || row.refs === 0);
+    const rows = fileRows.filter((row) => !zeroOnly || row.refs === 0);
+    if (fileSort === 'size-desc') return [...rows].sort((a, b) => (b.size || 0) - (a.size || 0) || String(a.label || '').localeCompare(String(b.label || ''), 'zh'));
+    if (fileSort === 'size-asc') return [...rows].sort((a, b) => (a.size || 0) - (b.size || 0) || String(a.label || '').localeCompare(String(b.label || ''), 'zh'));
+    return rows;
 }
 
 function isImageFile(name) {
@@ -886,7 +943,7 @@ function renderFiles() {
             <td class="thumb">${thumb}</td>
             <td class="name"><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener">${escapeHtml(row.label || row.name)}</a></td>
             <td class="num">${escapeHtml(formatSize(row.size))}</td>
-            <td class="num refs">${row.refs}</td>
+            <td class="num refs">${row.refs ? `<button type="button" class="refs-btn" data-refs="${escapeHtml(row.name)}">${row.refs}</button>` : '0'}</td>
             <td class="num"><button type="button" class="danger" data-del="${escapeHtml(row.name)}">删除</button></td>
         </tr>`;
     }).join('');
@@ -927,10 +984,41 @@ document.getElementById('files-delete-zero').addEventListener('click', () => {
     const names = visibleFiles().map((row) => row.name);
     deleteUploadNames(names, '删除这 ' + names.length + ' 个没有被引用的附件？文件会从服务器去掉。');
 });
+document.getElementById('files-sort-size').addEventListener('click', () => {
+    fileSort = fileSort === 'size-desc' ? 'size-asc' : fileSort === 'size-asc' ? 'time' : 'size-desc';
+    const btn = document.getElementById('files-sort-size');
+    btn.textContent = fileSort === 'size-desc' ? '大小 ↓' : fileSort === 'size-asc' ? '大小 ↑' : '大小';
+    renderFiles();
+});
+
+async function openReferencedPage(page) {
+    viewMode = page.deleted ? 'trash' : 'lib';
+    trashMode = viewMode === 'trash';
+    document.getElementById('mode-lib').classList.toggle('on', viewMode === 'lib');
+    document.getElementById('mode-trash').classList.toggle('on', trashMode);
+    document.getElementById('mode-files').classList.remove('on');
+    document.body.classList.remove('files-mode');
+    document.getElementById('files').classList.add('hidden');
+    if (trashMode) trashFolded = false;
+    applyLock();
+    await load(page.id);
+}
+
 document.getElementById('files-body').addEventListener('click', (event) => {
     const preview = event.target.closest('[data-preview]');
     if (preview) {
         showLightbox(preview.dataset.preview);
+        return;
+    }
+    const refsBtn = event.target.closest('[data-refs]');
+    if (refsBtn) {
+        const row = fileRows.find((item) => item.name === refsBtn.dataset.refs);
+        const used = (row && row.usedBy) || [];
+        if (!used.length) return;
+        showFloatMenu(event.clientX, event.clientY, used.map((page) => ({
+            label: (page.deleted ? '回收站 · ' : '') + (page.title || '未命名'),
+            onClick: () => openReferencedPage(page)
+        })));
         return;
     }
     const btn = event.target.closest('[data-del]');
@@ -1360,6 +1448,18 @@ async function downloadObsidian(rootId) {
 }
 
 document.getElementById('export-obsidian').addEventListener('click', () => downloadObsidian(''));
+document.getElementById('export-markdown').addEventListener('click', async () => {
+    const res = await api('/api/markdown/export');
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rbwiki-markdown.zip';
+    a.click();
+    URL.revokeObjectURL(url);
+    document.getElementById('settings-msg').textContent = '已导出 Markdown 备份';
+});
 document.getElementById('menu-export').addEventListener('click', () => {
     const id = menuPageId;
     closeMenu();
@@ -1563,26 +1663,25 @@ function decorateHeadings() {
     renderToc();
 }
 
-function replaceBlock(line, html) {
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNode(line);
-    editorEl.focus();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    document.execCommand('insertHTML', false, html);
-}
-
 function deleteNodesUndo(nodes) {
-    if (!nodes.length) return;
+    const live = nodes.map((node) => {
+        if (!node || !node.isConnected) return null;
+        if (node.nodeType === 1 && /^H[1-6]$/.test(node.tagName)) return setBlockTag(node, 'div');
+        return node;
+    }).filter((node) => node && node.isConnected);
+    if (!live.length) return;
     const sel = window.getSelection();
     const range = document.createRange();
-    range.setStartBefore(nodes[0]);
-    range.setEndAfter(nodes[nodes.length - 1]);
+    range.setStartBefore(live[0]);
+    range.setEndAfter(live[live.length - 1]);
     editorEl.focus();
     sel.removeAllRanges();
     sel.addRange(range);
     document.execCommand('delete');
+    live.forEach((node) => {
+        if (!node.isConnected) return;
+        if (node.nodeType === 1 && /^H[1-6]$/.test(node.tagName)) node.remove();
+    });
     if (!editorEl.firstChild) document.execCommand('insertHTML', false, '<div><br></div>');
     decorateHeadings();
     scheduleSave();
@@ -1650,14 +1749,48 @@ function showHeadingMenu(x, y, heading) {
     showFloatMenu(x, y, items, heading);
 }
 
+function blockFromSelection() {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    let node = sel.anchorNode;
+    if (!node) return null;
+    if (node === editorEl) return editorEl.childNodes[sel.anchorOffset] || editorEl.childNodes[sel.anchorOffset - 1] || null;
+    while (node.parentNode && node.parentNode !== editorEl) node = node.parentNode;
+    return node && node.parentNode === editorEl ? node : null;
+}
+
+function setBlockTag(line, tag) {
+    const wanted = String(tag || 'div').toLowerCase();
+    if (!line || !line.isConnected || line === editorEl || line.nodeType !== 1) return line;
+    if (line.classList.contains('code-block')) return line;
+    if (line.tagName.toLowerCase() === wanted) return line;
+    document.execCommand('defaultParagraphSeparator', false, 'div');
+    editorEl.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(line);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('formatBlock', false, wanted);
+    let block = blockFromSelection();
+    if (!block || block === editorEl || block.tagName.toLowerCase() !== wanted) {
+        if (line.isConnected) {
+            range.selectNodeContents(line);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        }
+        document.execCommand('formatBlock', false, '<' + wanted + '>');
+        block = blockFromSelection();
+    }
+    if (!block || block === editorEl || block.tagName.toLowerCase() !== wanted) return line.isConnected ? line : block;
+    return block;
+}
+
 function headingToText(heading) {
-    const clone = heading.cloneNode(true);
-    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
-    const inner = stripInvisible(clone.innerText || '').replace(/\u00a0/g, ' ').trim() ? clone.innerHTML : '<br>';
-    replaceBlock(heading, `<div>${inner}</div>`);
+    const block = setBlockTag(heading, 'div');
     decorateHeadings();
     scheduleSave();
-    statusEl.textContent = '已改为正文';
+    statusEl.textContent = block && block.tagName === 'DIV' ? '已改为正文' : '没有改成正文';
 }
 
 function removeHeading(heading, section) {
@@ -1712,12 +1845,20 @@ function placeCaret(el) {
 }
 
 function retagHeading(line, level) {
-    const clone = line.cloneNode(true);
-    clone.querySelectorAll('.heading-copy').forEach((node) => node.remove());
-    const text = clone.querySelector('h1, h2, h3, h4') ? null : document.createTreeWalker(clone, NodeFilter.SHOW_TEXT).nextNode();
-    if (text) text.textContent = text.textContent.replace(/^#{1,4}/, '');
-    const inner = stripInvisible(clone.innerText || '').replace(/\u00a0/g, ' ').trim() ? clone.innerHTML : '<br>';
-    replaceBlock(line, `<h${level}>${inner}</h${level}>`);
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    const text = walker.nextNode();
+    if (text && /^#{1,4}/.test(text.textContent)) {
+        const mark = text.textContent.match(/^#{1,4}/)[0];
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, mark.length);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('delete');
+    }
+    const current = line.isConnected ? line : blockFromSelection();
+    setBlockTag(current, 'h' + level);
     decorateHeadings();
     scheduleSave();
 }
@@ -1725,14 +1866,24 @@ function retagHeading(line, level) {
 function applyHeadingLevel(level) {
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount) return;
-    const lines = linesOfSelection(sel).filter((line) => line && line !== editorEl && !(line.classList && line.classList.contains('code-block')));
+    const lines = linesOfSelection(sel).filter((line) => line && line !== editorEl && line.nodeType === 1 && !(line.classList && line.classList.contains('code-block')));
     if (!lines.length) return;
+    const tag = level ? 'h' + level : 'div';
+    let last = null;
     lines.forEach((line) => {
-        const text = headingText(line);
-        replaceBlock(line, `<h${level}>${text ? escapeHtml(text) : '<br>'}</h${level}>`);
+        if (!line.isConnected) return;
+        last = setBlockTag(line, tag) || last;
     });
+    if (last && last.isConnected) {
+        const range = document.createRange();
+        range.selectNodeContents(last);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    }
     decorateHeadings();
     scheduleSave();
+    statusEl.textContent = level ? '已改为标题 ' + level : '已改为正文';
 }
 
 async function readShownSize(src, img, meta) {
@@ -2010,7 +2161,7 @@ function editLink(anchor) {
     editorEl.before(bar);
     const input = bar.querySelector('input');
     input.value = linkTargetText(anchor);
-    input.focus();
+    input.focus({ preventScroll: true });
     input.select();
     const finish = () => {
         const value = input.value.trim();
@@ -2061,7 +2212,7 @@ function insertLink() {
     bar.innerHTML = '<span>链接</span><input id="link-url-input" type="text" placeholder="https://"><button type="button" id="link-ok">确定</button>';
     editorEl.before(bar);
     const input = bar.querySelector('input');
-    input.focus();
+    input.focus({ preventScroll: true });
     const finish = () => {
         const url = safeUrl(input.value);
         bar.remove();
@@ -2482,7 +2633,7 @@ function insertDateTime() {
 }
 
 document.querySelector('.toolbar').addEventListener('mousedown', (event) => {
-    if (event.target.closest('#tb-color-label')) {
+    if (event.target.closest('#tb-color-label, #tb-bg-label')) {
         rememberRange();
         return;
     }
@@ -2512,6 +2663,30 @@ document.getElementById('tb-color-label').addEventListener('contextmenu', (event
     const color = document.getElementById('tb-color').value;
     document.execCommand('foreColor', false, color);
     document.getElementById('tb-color-label').style.color = color;
+    scheduleSave();
+});
+const savedBg = localStorage.getItem('rbw-last-bg');
+if (savedBg) {
+    document.getElementById('tb-bg').value = savedBg;
+    document.getElementById('tb-bg-label').style.background = savedBg;
+}
+function paintBackground(color) {
+    document.execCommand('styleWithCSS', false, true);
+    document.execCommand('hiliteColor', false, color);
+    document.getElementById('tb-bg-label').style.background = color;
+    localStorage.setItem('rbw-last-bg', color);
+}
+document.getElementById('tb-bg').addEventListener('input', (event) => {
+    if (!editorWritable()) return;
+    restoreRange();
+    paintBackground(event.target.value);
+    scheduleSave();
+});
+document.getElementById('tb-bg-label').addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    if (!editorWritable()) return;
+    restoreRange();
+    paintBackground(document.getElementById('tb-bg').value);
     scheduleSave();
 });
 document.getElementById('tb-clear-color').addEventListener('click', (event) => clearFormatting(event.shiftKey));
@@ -2800,7 +2975,7 @@ editorEl.addEventListener('keydown', (event) => {
             }
         }
     }
-    const headingDigit = /^Digit([1-4])$/.test(event.code) ? event.code.slice(5) : (/^[1-4]$/.test(event.key) ? event.key : '');
+    const headingDigit = /^Digit([0-4])$/.test(event.code) ? event.code.slice(5) : (/^[0-4]$/.test(event.key) ? event.key : '');
     if ((event.ctrlKey || event.metaKey) && event.altKey && !event.shiftKey && headingDigit) {
         event.preventDefault();
         applyHeadingLevel(Number(headingDigit));
