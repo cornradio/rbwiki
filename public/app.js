@@ -21,6 +21,15 @@ let finderMode = 'all';
 let finderIndex = 0;
 let finderHits = [];
 let menuPageId = null;
+let wikiFiles = null;
+let wikiItems = [];
+let wikiIndex = 0;
+let wikiQuery = '';
+let navStack = [];
+let navIndex = -1;
+let navLock = false;
+let historyOpen = false;
+let sideNavAt = 0;
 const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
 const collapsed = new Set(JSON.parse(localStorage.getItem('rbw-collapsed') || '[]'));
 const collapsedTrash = new Set();
@@ -289,13 +298,30 @@ function showCurrent() {
     statusEl.textContent = '';
     applyLock();
     document.title = (page.title || '未命名') + ' · RBWiki';
+    noteVisit(currentId, navLock);
 }
 
 async function openPage(id) {
     flushSave();
+    if (viewMode !== 'lib') {
+        viewMode = 'lib';
+        trashMode = false;
+        document.getElementById('mode-lib').classList.add('on');
+        document.getElementById('mode-trash').classList.remove('on');
+        document.getElementById('mode-files').classList.remove('on');
+        document.body.classList.remove('files-mode');
+        document.getElementById('files').classList.add('hidden');
+        const listed = await fetch('/api/pages');
+        if (listed.ok) pages = await listed.json();
+        applyLock();
+    }
+    const res = await fetch('/api/pages/' + id);
+    if (!res.ok) {
+        statusEl.textContent = '页面打不开';
+        return false;
+    }
     currentId = id;
     sessionStorage.setItem('rbw-page', id);
-    const res = await fetch('/api/pages/' + id);
     const page = await res.json();
     const idx = pages.findIndex((p) => p.id === id);
     if (idx >= 0) pages[idx] = page;
@@ -312,7 +338,142 @@ async function openPage(id) {
     emptyEl.classList.add('hidden');
     pageEl.classList.remove('hidden');
     applyLock();
+    noteVisit(id, navLock);
+    return true;
 }
+
+function readHistory() {
+    try {
+        const list = JSON.parse(localStorage.getItem('rbw-history') || '[]');
+        return Array.isArray(list) ? list.filter((item) => item && item.id) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function historyWhen(at) {
+    const d = new Date(at);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n) => String(n).padStart(2, '0');
+    const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (d.toDateString() === new Date().toDateString()) return hm;
+    return (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm;
+}
+
+function noteVisit(id, silent) {
+    if (!id || trashMode) return;
+    const page = pages.find((item) => item.id === id);
+    const title = (page && page.title) || '未命名';
+    const list = readHistory().filter((item) => item.id !== id);
+    list.unshift({ id, title, at: Date.now() });
+    localStorage.setItem('rbw-history', JSON.stringify(list.slice(0, 40)));
+    if (!silent) rememberNav(id);
+    if (historyOpen) renderHistory();
+}
+
+function renameHistory(id, title) {
+    const list = readHistory();
+    const hit = list.find((item) => item.id === id);
+    const next = title || '未命名';
+    if (!hit || hit.title === next) return;
+    hit.title = next;
+    localStorage.setItem('rbw-history', JSON.stringify(list));
+    if (historyOpen) renderHistory();
+}
+
+function rememberNav(id) {
+    if (!id || navLock) return;
+    if (navStack[navIndex] === id) return;
+    navStack = navStack.slice(0, navIndex + 1);
+    navStack.push(id);
+    if (navStack.length > 80) navStack.shift();
+    navIndex = navStack.length - 1;
+}
+
+async function travel(dir) {
+    const next = navIndex + dir;
+    if (next < 0 || next >= navStack.length) {
+        statusEl.textContent = dir < 0 ? '没有上一页' : '没有下一页';
+        return;
+    }
+    const id = navStack[next];
+    const prev = navIndex;
+    navIndex = next;
+    navLock = true;
+    try {
+        const ok = await openPage(id);
+        if (!ok) navIndex = prev;
+    } finally {
+        navLock = false;
+    }
+}
+
+function hideHistory() {
+    historyOpen = false;
+    const pop = document.getElementById('history-pop');
+    const btn = document.getElementById('history-btn');
+    if (pop) pop.classList.add('hidden');
+    if (btn) btn.classList.remove('on');
+}
+
+function renderHistory() {
+    const pop = document.getElementById('history-pop');
+    const list = readHistory();
+    pop.innerHTML = '';
+    if (!list.length) {
+        const empty = document.createElement('p');
+        empty.className = 'history-empty';
+        empty.textContent = '还没有看过的页面';
+        pop.appendChild(empty);
+        return;
+    }
+    list.forEach((item) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        if (item.id === currentId) btn.className = 'on';
+        const page = pages.find((entry) => entry.id === item.id);
+        const name = document.createElement('span');
+        name.className = 'history-name';
+        name.textContent = (page && page.title) || item.title || '未命名';
+        const when = document.createElement('span');
+        when.className = 'when';
+        when.textContent = historyWhen(item.at);
+        btn.append(name, when);
+        btn.addEventListener('click', () => {
+            hideHistory();
+            openPage(item.id);
+        });
+        pop.appendChild(btn);
+    });
+}
+
+function showHistory() {
+    const pop = document.getElementById('history-pop');
+    const btn = document.getElementById('history-btn');
+    historyOpen = true;
+    btn.classList.add('on');
+    renderHistory();
+    pop.classList.remove('hidden');
+    const rect = btn.getBoundingClientRect();
+    const width = 260;
+    pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
+    pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 80) + 'px';
+}
+
+document.getElementById('history-btn').addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (historyOpen) hideHistory();
+    else showHistory();
+});
+document.addEventListener('mousedown', (event) => {
+    const suggest = document.querySelector('.wiki-suggest');
+    if (suggest && !suggest.contains(event.target)) closeWikiSuggest();
+    if (!historyOpen) return;
+    const pop = document.getElementById('history-pop');
+    const btn = document.getElementById('history-btn');
+    if (pop.contains(event.target) || btn.contains(event.target)) return;
+    hideHistory();
+});
 
 async function createPage(parentId) {
     if (!canWrite) return openSettings();
@@ -412,6 +573,7 @@ async function flushSave() {
     const idx = pages.findIndex((p) => p.id === saved.id);
     if (idx >= 0) pages[idx] = { ...pages[idx], ...saved };
     statusEl.textContent = '已保存';
+    renameHistory(saved.id, saved.title || title);
     renderTree();
 }
 
@@ -650,7 +812,13 @@ function exportRoot() {
 }
 
 function shareDocument(title, bodyHtml) {
-    return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:32px 24px 64px;line-height:1.7;color:#1c1915;}h1{font-size:28px;line-height:1.3;}h2{font-size:22px;}h3{font-size:18px;}img{max-width:100%;height:auto;}a{color:#c4552a;}pre{white-space:pre-wrap;background:#f3eee6;padding:10px 12px;border-radius:8px;}</style></head><body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`;
+    return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>'
+        + escapeHtml(title)
+        + '</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:760px;margin:0 auto;padding:32px 24px 64px;line-height:1.7;color:#1c1915;}h1{font-size:28px;line-height:1.3;}h2{font-size:22px;}h3{font-size:18px;}img{max-width:100%;height:auto;}a{color:#c4552a;}a.file-link{text-decoration:underline;text-decoration-style:double;}pre{white-space:pre-wrap;background:#f3eee6;padding:10px 12px;border-radius:8px;}</style></head><body><h1>'
+        + escapeHtml(title)
+        + '</h1>'
+        + bodyHtml
+        + '</body></html>';
 }
 
 function blobToDataUrl(blob) {
@@ -662,15 +830,55 @@ function blobToDataUrl(blob) {
     });
 }
 
+function absoluteAssetUrl(value) {
+    const clean = stripUploadCache(String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, '"'));
+    if (!clean || clean.startsWith('data:') || clean.startsWith('blob:')) return clean;
+    if (/^https?:\/\//i.test(clean)) return clean;
+    if (clean.startsWith('/')) return location.origin + clean;
+    try { return new URL(clean, location.href).href; } catch (e) { return clean; }
+}
+
+async function fetchAsDataUrl(src) {
+    const url = absoluteAssetUrl(src);
+    if (!url || url.startsWith('data:')) return url || '';
+    try {
+        const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) return '';
+        return await blobToDataUrl(await res.blob());
+    } catch (e) {
+        return '';
+    }
+}
+
+async function embedHtmlImages(html) {
+    const source = String(html || '');
+    const re = /(<img\b[^>]*?\bsrc\s*=\s*)(["'])([\s\S]*?)\2/gi;
+    let out = '';
+    let last = 0;
+    let missed = 0;
+    for (const match of source.matchAll(re)) {
+        out += source.slice(last, match.index);
+        const src = match[3];
+        if (src.startsWith('data:')) {
+            out += match[0];
+        } else {
+            const data = await fetchAsDataUrl(src);
+            if (data) out += match[1] + match[2] + data + match[2];
+            else {
+                out += match[0];
+                missed += 1;
+            }
+        }
+        last = match.index + match[0].length;
+    }
+    out += source.slice(last);
+    return { html: out, missed };
+}
+
 async function inlineExportImages(root) {
-    const images = [...root.querySelectorAll('img')];
-    await Promise.all(images.map(async (img) => {
-        try {
-            const res = await fetch(img.src);
-            if (!res.ok) return;
-            img.src = await blobToDataUrl(await res.blob());
-        } catch (e) {}
-    }));
+    const packed = await embedHtmlImages(root.innerHTML);
+    root.innerHTML = packed.html;
+    return packed;
 }
 
 function downloadBlob(blob, name) {
@@ -841,10 +1049,10 @@ function shareRichText() {
 async function shareHtmlFile() {
     const title = titleEl.value || '未命名';
     const root = exportRoot();
-    await inlineExportImages(root);
+    const packed = await inlineExportImages(root);
     const blob = new Blob([shareDocument(title, root.innerHTML)], { type: 'text/html;charset=utf-8' });
     downloadBlob(blob, exportFileName(title, 'html'));
-    statusEl.textContent = '已下载 HTML';
+    statusEl.textContent = packed.missed ? '已下载 HTML，还有 ' + packed.missed + ' 张图片没嵌入' : '已下载 HTML，图片已嵌入';
 }
 
 async function sharePdf() {
@@ -1532,7 +1740,7 @@ function editorWritable() {
 }
 
 function closeFloatMenus() {
-    document.querySelectorAll('.float-menu, .emoji-panel').forEach((node) => node.remove());
+    document.querySelectorAll('.float-menu, .emoji-panel, .wiki-suggest').forEach((node) => node.remove());
     document.querySelectorAll('.context-target').forEach((node) => node.classList.remove('context-target'));
 }
 
@@ -1913,6 +2121,10 @@ async function readShownSize(src, img, meta) {
 async function compressShownImage(img, meta, btn) {
     const name = uploadNameFromSrc(img.src);
     if (!name) return;
+    if (/\.svg$/i.test(name)) {
+        meta.textContent = 'SVG 不压缩';
+        return;
+    }
     if (!canWrite) {
         statusEl.textContent = '先在设置里解锁';
         return;
@@ -1956,6 +2168,48 @@ async function compressShownImage(img, meta, btn) {
     }
     btn.textContent = '压缩图片';
     btn.disabled = false;
+}
+
+function pngFileFromImage(img) {
+    const width = img.naturalWidth || img.width;
+    const height = img.naturalHeight || img.height;
+    if (!width || !height) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    const dataUrl = canvas.toDataURL('image/png');
+    const body = dataUrl.split(',')[1] || '';
+    const binary = atob(body);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { file: new File([bytes], 'image.png', { type: 'image/png' }), dataUrl };
+}
+
+function copyShownImage(img) {
+    const sel = window.getSelection();
+    const saved = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    const range = document.createRange();
+    range.selectNode(img);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    let packed = null;
+    try { packed = pngFileFromImage(img); } catch (e) { packed = null; }
+    const onCopy = (event) => {
+        if (!event.clipboardData || !packed) return;
+        event.preventDefault();
+        event.clipboardData.setData('text/html', '<img src="' + packed.dataUrl + '">');
+        try { event.clipboardData.items.add(packed.file); } catch (e) {}
+    };
+    document.addEventListener('copy', onCopy, true);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.removeEventListener('copy', onCopy, true);
+    sel.removeAllRanges();
+    if (saved) {
+        try { sel.addRange(saved); } catch (e) {}
+    }
+    statusEl.textContent = ok ? '已复制图片' : '复制图片失败';
 }
 
 function showLightbox(src) {
@@ -2283,7 +2537,8 @@ function compressImage(file) {
 }
 
 async function prepareImage(file) {
-    if (compressionEnabled && file.type.startsWith('image/')) {
+    if (isSvgFile(file)) return file;
+    if (compressionEnabled && (file.type || '').startsWith('image/')) {
         try { return await compressImage(file); } catch (e) {}
     }
     return file;
@@ -2341,6 +2596,7 @@ function uploadBlob(file) {
                 return;
             }
             showUploadProgress(1, 1);
+            wikiFiles = null;
             resolve(data);
         };
         xhr.onerror = () => {
@@ -2361,9 +2617,16 @@ async function insertImageFile(file) {
     statusEl.textContent = '已插入图片';
 }
 
+function isSvgFile(file) {
+    const type = (file && file.type || '').toLowerCase();
+    const name = (file && file.name) || '';
+    return type === 'image/svg+xml' || /\.svg$/i.test(name);
+}
+
 function looksLikeImage(file) {
+    if (isSvgFile(file)) return false;
     if ((file.type || '').startsWith('image/')) return true;
-    return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(file.name || '');
+    return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file.name || '');
 }
 
 async function insertAnyFile(file) {
@@ -2414,6 +2677,7 @@ async function deleteUploaded(url) {
     const name = decodeURIComponent(part.split(/[?#]/)[0]);
     if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) return false;
     const res = await api('/api/uploads/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (res.ok) wikiFiles = null;
     return res.ok;
 }
 
@@ -2650,18 +2914,17 @@ updateCompressBtn();
 
 document.getElementById('tb-color').addEventListener('input', (event) => {
     if (!editorWritable()) return;
-    restoreRange();
-    document.execCommand('foreColor', false, event.target.value);
+    dragStyle('color', event.target.value);
     document.getElementById('tb-color-label').style.color = event.target.value;
     localStorage.setItem('rbw-last-color', event.target.value);
     scheduleSave();
 });
+document.getElementById('tb-color').addEventListener('change', () => finishStyleDrag('color'));
 document.getElementById('tb-color-label').addEventListener('contextmenu', (event) => {
     event.preventDefault();
     if (!editorWritable()) return;
-    restoreRange();
     const color = document.getElementById('tb-color').value;
-    document.execCommand('foreColor', false, color);
+    applyStyleOnce('color', color);
     document.getElementById('tb-color-label').style.color = color;
     scheduleSave();
 });
@@ -2670,23 +2933,234 @@ if (savedBg) {
     document.getElementById('tb-bg').value = savedBg;
     document.getElementById('tb-bg-label').style.background = savedBg;
 }
-function paintBackground(color) {
-    document.execCommand('styleWithCSS', false, true);
-    document.execCommand('hiliteColor', false, color);
-    document.getElementById('tb-bg-label').style.background = color;
-    localStorage.setItem('rbw-last-bg', color);
+function visibleInk(node) {
+    const el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+    return getComputedStyle(el || editorEl).color;
 }
+
+function textNodesInRange(range) {
+    const root = range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentNode;
+    if (!root) return [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    let node;
+    while ((node = walker.nextNode())) {
+        try {
+            if (range.intersectsNode(node)) nodes.push(node);
+        } catch (e) {}
+    }
+    return nodes;
+}
+
+function lockInk(span, ink) {
+    span.style.setProperty('color', ink, 'important');
+    span.style.setProperty('-webkit-text-fill-color', ink, 'important');
+}
+
+function nodePath(node) {
+    const path = [];
+    let cur = node;
+    while (cur && cur !== editorEl) {
+        const parent = cur.parentNode;
+        if (!parent) return null;
+        path.push([...parent.childNodes].indexOf(cur));
+        cur = parent;
+    }
+    if (cur !== editorEl) return null;
+    path.reverse();
+    return path;
+}
+
+function nodeFromPath(path) {
+    let cur = editorEl;
+    for (const index of path || []) {
+        cur = cur.childNodes[index];
+        if (!cur) return null;
+    }
+    return cur;
+}
+
+function bookmarkRange(range) {
+    return {
+        startPath: nodePath(range.startContainer),
+        start: range.startOffset,
+        endPath: nodePath(range.endContainer),
+        end: range.endOffset,
+        collapsed: range.collapsed
+    };
+}
+
+function selectBookmark(mark) {
+    const startNode = nodeFromPath(mark && mark.startPath);
+    const endNode = nodeFromPath(mark && mark.endPath);
+    if (!startNode || !endNode) return false;
+    const max = (node, offset) => (node.nodeType === 3 ? node.textContent.length : node.childNodes.length);
+    const range = document.createRange();
+    range.setStart(startNode, Math.min(mark.start, max(startNode)));
+    range.setEnd(endNode, Math.min(mark.end, max(endNode)));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+}
+
+function selectedTextNodes(range) {
+    return textNodesInRange(range).filter((node) => {
+        let start = 0;
+        let end = node.textContent.length;
+        if (node === range.startContainer) start = range.startOffset;
+        if (node === range.endContainer) end = Math.min(end, range.endOffset);
+        return start < end && node.textContent.slice(start, end);
+    });
+}
+
+function htmlForStyle(range, kind, color) {
+    const inks = selectedTextNodes(range).map((node) => visibleInk(node));
+    const frag = range.cloneContents();
+    const clones = [];
+    const walker = document.createTreeWalker(frag, NodeFilter.SHOW_TEXT);
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+        if (textNode.textContent) clones.push(textNode);
+    }
+    clones.forEach((node, index) => {
+        const span = document.createElement('span');
+        span.className = 'hl-live';
+        if (kind === 'bg') {
+            span.style.backgroundColor = color;
+            span.style.setProperty('--ink', inks[index] || getComputedStyle(editorEl).color);
+        } else {
+            span.style.setProperty('--ink', color);
+        }
+        node.parentNode.insertBefore(span, node);
+        span.appendChild(node);
+    });
+    const holder = document.createElement('div');
+    holder.appendChild(frag);
+    return holder.innerHTML;
+}
+
+function paintLiveStyle(kind, color) {
+    editorEl.querySelectorAll('.hl-live').forEach((span) => {
+        if (kind === 'bg') span.style.backgroundColor = color;
+        else span.style.setProperty('--ink', color);
+    });
+}
+
+function sealLiveInk() {
+    editorEl.querySelectorAll('.hl-live').forEach((span) => {
+        const ink = span.style.getPropertyValue('--ink');
+        if (ink) lockInk(span, ink.trim());
+        span.classList.remove('hl-live');
+    });
+}
+
+let styleDrag = null;
+
+function applyStyleOnce(kind, color) {
+    styleDrag = null;
+    restoreRange();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    document.execCommand('styleWithCSS', false, true);
+    if (range.collapsed) {
+        if (kind === 'bg') {
+            document.execCommand('foreColor', false, getComputedStyle(editorEl).color);
+            document.execCommand('hiliteColor', false, color);
+        } else {
+            document.execCommand('foreColor', false, color);
+        }
+        return;
+    }
+    const html = htmlForStyle(range, kind, color);
+    if (html && document.execCommand('insertHTML', false, html)) sealLiveInk();
+}
+
+function dragStyle(kind, color) {
+    if (styleDrag && styleDrag.kind === kind && !styleDrag.cancelled) {
+        styleDrag.color = color;
+        styleDrag.dirty = true;
+        paintLiveStyle(kind, color);
+        return;
+    }
+    restoreRange();
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const range = sel.getRangeAt(0).cloneRange();
+    const mark = bookmarkRange(range);
+    document.execCommand('styleWithCSS', false, true);
+    let steps = 0;
+    if (range.collapsed) {
+        if (kind === 'bg') {
+            if (document.execCommand('foreColor', false, getComputedStyle(editorEl).color)) steps += 1;
+            if (document.execCommand('hiliteColor', false, color)) steps += 1;
+        } else if (document.execCommand('foreColor', false, color)) {
+            steps += 1;
+        }
+    } else {
+        const html = htmlForStyle(range, kind, color);
+        if (html && document.execCommand('insertHTML', false, html)) steps = 1;
+    }
+    styleDrag = { kind, color, mark, steps, dirty: false, cancelled: false };
+}
+
+function finishStyleDrag(kind) {
+    const drag = styleDrag;
+    if (!drag || drag.kind !== kind) return;
+    styleDrag = null;
+    if (drag.cancelled || !drag.dirty || !drag.steps) {
+        sealLiveInk();
+        scheduleSave();
+        return;
+    }
+    editorEl.focus();
+    for (let i = 0; i < drag.steps; i++) document.execCommand('undo');
+    if (!selectBookmark(drag.mark)) {
+        scheduleSave();
+        return;
+    }
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const range = sel.getRangeAt(0);
+    document.execCommand('styleWithCSS', false, true);
+    if (range.collapsed) {
+        if (kind === 'bg') {
+            document.execCommand('foreColor', false, getComputedStyle(editorEl).color);
+            document.execCommand('hiliteColor', false, drag.color);
+        } else {
+            document.execCommand('foreColor', false, drag.color);
+        }
+        scheduleSave();
+        return;
+    }
+    const html = htmlForStyle(range, kind, drag.color);
+    if (html && document.execCommand('insertHTML', false, html)) sealLiveInk();
+    scheduleSave();
+}
+
+document.addEventListener('keydown', (event) => {
+    if (!styleDrag || event.isComposing) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') styleDrag.cancelled = true;
+}, true);
+
 document.getElementById('tb-bg').addEventListener('input', (event) => {
     if (!editorWritable()) return;
-    restoreRange();
-    paintBackground(event.target.value);
+    document.getElementById('tb-bg-label').style.background = event.target.value;
+    localStorage.setItem('rbw-last-bg', event.target.value);
+    dragStyle('bg', event.target.value);
     scheduleSave();
 });
+document.getElementById('tb-bg').addEventListener('change', () => finishStyleDrag('bg'));
 document.getElementById('tb-bg-label').addEventListener('contextmenu', (event) => {
     event.preventDefault();
     if (!editorWritable()) return;
-    restoreRange();
-    paintBackground(document.getElementById('tb-bg').value);
+    const color = document.getElementById('tb-bg').value;
+    document.getElementById('tb-bg-label').style.background = color;
+    localStorage.setItem('rbw-last-bg', color);
+    applyStyleOnce('bg', color);
     scheduleSave();
 });
 document.getElementById('tb-clear-color').addEventListener('click', (event) => clearFormatting(event.shiftKey));
@@ -2728,6 +3202,232 @@ document.getElementById('any-file').addEventListener('change', async (event) => 
 
 document.getElementById('lightbox').addEventListener('click', closeLightbox);
 
+function wikiSuggestOpen() {
+    return !!document.querySelector('.wiki-suggest');
+}
+
+function closeWikiSuggest() {
+    document.querySelectorAll('.wiki-suggest').forEach((node) => node.remove());
+    wikiItems = [];
+    wikiIndex = 0;
+    wikiQuery = '';
+}
+
+function caretTextQuery() {
+    const sel = window.getSelection();
+    if (!sel || !sel.isCollapsed || !sel.rangeCount) return null;
+    const node = sel.anchorNode;
+    if (!node || node.nodeType !== 3 || !editorEl.contains(node)) return null;
+    const parent = node.parentElement;
+    if (parent && parent.closest('a, pre, .code-block, .code-bar')) return null;
+    const text = node.textContent.slice(0, sel.anchorOffset);
+    const closed = text.match(/\[\[([^\[\]\n]{0,80})\]\]$/);
+    if (closed) return { node, start: text.length - closed[0].length, end: sel.anchorOffset, query: closed[1], closed: true };
+    const at = text.lastIndexOf('[[');
+    if (at < 0) return null;
+    const query = text.slice(at + 2);
+    if (query.includes(']') || query.includes('\n') || query.length > 80) return null;
+    return { node, start: at, end: sel.anchorOffset, query, closed: false };
+}
+
+function fileMatchKeys(file) {
+    const label = String(file.label || '').trim().toLowerCase();
+    const name = String(file.name || '').trim().toLowerCase();
+    const base = name.replace(/\.[^.]+$/, '');
+    return [label, name, base].filter(Boolean);
+}
+
+async function loadWikiFiles() {
+    if (wikiFiles) return wikiFiles;
+    try {
+        const res = await fetch('/api/uploads');
+        wikiFiles = res.ok ? await res.json() : [];
+    } catch (e) {
+        wikiFiles = [];
+    }
+    return wikiFiles;
+}
+
+function wikiCandidates(query) {
+    const forced = query.startsWith('__');
+    const needle = query.replace(/^__+/, '').replace(/__+$/, '').trim().toLowerCase();
+    const pageHits = forced ? [] : pages.filter((page) => {
+        if (page.deletedAt) return false;
+        const title = (page.title || '未命名').toLowerCase();
+        return !needle || title.includes(needle);
+    }).slice(0, 8).map((page) => ({ kind: 'page', page }));
+    const fileHits = (wikiFiles || []).filter((file) => {
+        if (!needle) return true;
+        return fileMatchKeys(file).some((key) => key.includes(needle));
+    }).slice(0, 8).map((file) => ({ kind: 'file', file }));
+    return pageHits.concat(fileHits);
+}
+
+function exactWikiHit(query) {
+    const forced = /^__.+__$/.test(query.trim());
+    const needle = query.trim().replace(/^__+/, '').replace(/__+$/, '').toLowerCase();
+    if (!needle) return null;
+    if (!forced) {
+        const page = pages.find((item) => !item.deletedAt && (item.title || '未命名').toLowerCase() === needle);
+        if (page) return { kind: 'page', page };
+    }
+    const file = (wikiFiles || []).find((item) => fileMatchKeys(item).includes(needle));
+    return file ? { kind: 'file', file } : null;
+}
+
+function linkHtmlForHit(hit) {
+    if (hit.kind === 'page') {
+        const title = hit.page.title || '未命名';
+        return `<a class="wikilink" data-page="${hit.page.id}" href="#">${escapeHtml(title)}</a>`;
+    }
+    const label = hit.file.label || hit.file.name;
+    return `<a class="file-link" href="${escapeHtml(hit.file.url)}" title="文件">${escapeHtml(label)}</a>`;
+}
+
+function placeCaretAfter(node) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+}
+
+function insertWikiHit(info, hit) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStart(info.node, info.start);
+    range.setEnd(info.node, info.end);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertHTML', false, linkHtmlForHit(hit));
+    const anchor = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+    const link = anchor && anchor.closest && anchor.closest('a');
+    if (link) placeCaretAfter(link);
+    closeWikiSuggest();
+    scheduleSave();
+    statusEl.textContent = hit.kind === 'file' ? '已插入文件链接' : '已插入页面链接';
+}
+
+function paintWikiSuggest(box) {
+    box.innerHTML = '';
+    if (!wikiItems.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = '没有匹配的页面或文件';
+        box.appendChild(empty);
+        return;
+    }
+    let seenPage = false;
+    let seenFile = false;
+    wikiItems.forEach((hit, index) => {
+        if (hit.kind === 'page' && !seenPage) {
+            seenPage = true;
+            const label = document.createElement('div');
+            label.className = 'group';
+            label.textContent = '页面';
+            box.appendChild(label);
+        }
+        if (hit.kind === 'file' && !seenFile) {
+            seenFile = true;
+            const label = document.createElement('div');
+            label.className = 'group';
+            label.textContent = '文件';
+            box.appendChild(label);
+        }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        if (hit.kind === 'file') btn.className = 'file-item';
+        if (index === wikiIndex) btn.classList.add('on');
+        btn.textContent = hit.kind === 'page' ? (hit.page.title || '未命名') : (hit.file.label || hit.file.name);
+        btn.addEventListener('mousedown', (event) => event.preventDefault());
+        btn.addEventListener('click', () => {
+            const info = caretTextQuery();
+            if (info) insertWikiHit(info, hit);
+            else closeWikiSuggest();
+        });
+        box.appendChild(btn);
+    });
+}
+
+function placeWikiSuggest(box) {
+    const sel = window.getSelection();
+    let rect = null;
+    if (sel && sel.rangeCount) {
+        const range = sel.getRangeAt(0).cloneRange();
+        range.collapse(true);
+        rect = range.getClientRects()[0] || range.getBoundingClientRect();
+    }
+    if (!rect || (!rect.top && !rect.left)) rect = editorEl.getBoundingClientRect();
+    const width = 280;
+    box.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
+    box.style.top = (rect.bottom + 6) + 'px';
+    const height = box.getBoundingClientRect().height || 160;
+    if (rect.bottom + 6 + height > window.innerHeight - 8) {
+        box.style.top = Math.max(8, rect.top - height - 6) + 'px';
+    }
+}
+
+function moveWikiSuggest(dir) {
+    if (!wikiItems.length) return;
+    wikiIndex = (wikiIndex + dir + wikiItems.length) % wikiItems.length;
+    const box = document.querySelector('.wiki-suggest');
+    if (!box) return;
+    paintWikiSuggest(box);
+    const current = box.querySelectorAll('button')[wikiIndex];
+    if (current) current.scrollIntoView({ block: 'nearest' });
+}
+
+function acceptWikiSuggest() {
+    const info = caretTextQuery();
+    const hit = wikiItems[wikiIndex];
+    if (!info || !hit) {
+        closeWikiSuggest();
+        return;
+    }
+    insertWikiHit(info, hit);
+}
+
+let wikiToken = 0;
+
+async function syncWikiSuggest() {
+    if (!editorWritable()) {
+        closeWikiSuggest();
+        return;
+    }
+    const info = caretTextQuery();
+    if (!info) {
+        closeWikiSuggest();
+        return;
+    }
+    const token = ++wikiToken;
+    await loadWikiFiles();
+    if (token !== wikiToken) return;
+    if (info.closed) {
+        const hit = exactWikiHit(info.query);
+        const live = caretTextQuery();
+        if (hit && live && live.closed && live.query === info.query && live.node === info.node) insertWikiHit(live, hit);
+        else closeWikiSuggest();
+        return;
+    }
+    const live = caretTextQuery();
+    if (!live || live.closed || live.query !== info.query) return;
+    if (live.query !== wikiQuery) {
+        wikiQuery = live.query;
+        wikiIndex = 0;
+    }
+    wikiItems = wikiCandidates(live.query);
+    wikiIndex = Math.min(wikiIndex, Math.max(0, wikiItems.length - 1));
+    let box = document.querySelector('.wiki-suggest');
+    if (!box) {
+        box = document.createElement('div');
+        box.className = 'wiki-suggest';
+        document.body.appendChild(box);
+    }
+    paintWikiSuggest(box);
+    placeWikiSuggest(box);
+}
+
 editorEl.addEventListener('compositionstart', () => {
     editorComposing = true;
 });
@@ -2736,12 +3436,14 @@ editorEl.addEventListener('compositionend', () => {
     normalizeLooseLines();
     wrapBareCheckboxes();
     decorateHeadings();
+    syncWikiSuggest();
 });
 editorEl.addEventListener('input', (event) => {
     if (editorComposing || event.isComposing) return;
     normalizeLooseLines();
     wrapBareCheckboxes();
     decorateHeadings();
+    syncWikiSuggest();
 });
 editorEl.addEventListener('click', (event) => {
     const marker = headingFromMarker(event);
@@ -2879,16 +3581,7 @@ editorEl.addEventListener('contextmenu', (event) => {
         { label: `设为默认宽度（${width}px）`, onClick: () => { imgDefaultWidth = width; localStorage.setItem('rbw-img-width', String(width)); statusEl.textContent = `新图片默认 ${width}px`; } },
         { label: `全部调成 ${width}px`, onClick: () => { editorEl.querySelectorAll('img').forEach((node) => { node.style.width = width + 'px'; node.style.height = 'auto'; }); scheduleSave(); } },
         { label: '查看大图', onClick: () => showLightbox(img.src) },
-        { label: '复制图片', onClick: async () => {
-            try {
-                const res = await fetch(img.src);
-                const blob = await res.blob();
-                await navigator.clipboard.write([new ClipboardItem({ [blob.type || 'image/png']: blob })]);
-                statusEl.textContent = '已复制图片';
-            } catch (e) {
-                statusEl.textContent = '复制图片失败';
-            }
-        } },
+        { label: '复制图片', onClick: () => copyShownImage(img) },
         { label: '从正文去掉', onClick: () => {
             if (resizeImg === img) deselectImage();
             img.remove();
@@ -2947,6 +3640,28 @@ editorEl.addEventListener('paste', async (event) => {
 
 editorEl.addEventListener('keydown', (event) => {
     if (!editorWritable() || event.isComposing || event.keyCode === 229) return;
+    if (wikiSuggestOpen()) {
+        if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            moveWikiSuggest(1);
+            return;
+        }
+        if (event.key === 'ArrowUp') {
+            event.preventDefault();
+            moveWikiSuggest(-1);
+            return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+            event.preventDefault();
+            acceptWikiSuggest();
+            return;
+        }
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeWikiSuggest();
+            return;
+        }
+    }
     if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.key.toLowerCase() === 'l' || event.key.toLowerCase() === 'k') && !event.shiftKey) {
         event.preventDefault();
         insertLink();
@@ -3063,6 +3778,32 @@ editorEl.addEventListener('keydown', (event) => {
         }
         scheduleSave();
     }
+});
+
+document.addEventListener('keydown', (event) => {
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.isComposing) {
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+            event.preventDefault();
+            event.stopPropagation();
+            travel(event.key === 'ArrowLeft' ? -1 : 1);
+        }
+    }
+}, true);
+
+function onSideButton(button) {
+    const now = Date.now();
+    if (now - sideNavAt < 350) return;
+    sideNavAt = now;
+    if (button === 3) travel(-1);
+    else if (button === 4) travel(1);
+}
+
+['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick'].forEach((type) => {
+    window.addEventListener(type, (event) => {
+        if (event.button !== 3 && event.button !== 4) return;
+        event.preventDefault();
+        if (type === 'pointerup' || type === 'mouseup' || type === 'auxclick') onSideButton(event.button);
+    }, true);
 });
 
 document.addEventListener('keydown', (event) => {

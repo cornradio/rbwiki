@@ -14,15 +14,16 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=36">
+    <link rel="stylesheet" href="/app.css?v=40">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
         <div class="brand">
-            <button id="settings-btn" type="button" title="设置">⚙</button>
+            <button id="fold-side" type="button" title="收起目录">收起</button>
             <img src="/favicon.svg" alt="" width="22" height="22">
-            <button id="fold-side" type="button">收起</button>
             <span>RBWiki</span>
+            <button id="history-btn" type="button" class="brand-icon" title="最近查看的页面" aria-label="历史"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" d="M12 7.2V12l3.2 2"/><circle cx="12" cy="12" r="7.2" fill="none" stroke="currentColor" stroke-width="1.7"/></svg></button>
+            <button id="settings-btn" type="button" class="brand-icon" title="设置" aria-label="设置"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19.4 13.5a7.7 7.7 0 0 0 .1-1.5 7.7 7.7 0 0 0-.1-1.5l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-2.6-1.5l-.4-2.6h-4l-.4 2.6a7.6 7.6 0 0 0-2.6 1.5l-2.4-1-2 3.4 2 1.6a7.7 7.7 0 0 0-.1 1.5 7.7 7.7 0 0 0 .1 1.5l-2 1.6 2 3.4 2.4-1a7.6 7.6 0 0 0 2.6 1.5l.4 2.6h4l.4-2.6a7.6 7.6 0 0 0 2.6-1.5l2.4 1 2-3.4-2-1.6zM12 15.2A3.2 3.2 0 1 1 15.2 12 3.2 3.2 0 0 1 12 15.2z"/></svg></button>
         </div>
         <div class="search-row">
             <input id="search" type="search" placeholder="搜索  Ctrl+O" autocomplete="off" readonly>
@@ -41,6 +42,7 @@
                 <span>附件</span>
             </button>
         </div>
+        <div id="history-pop" class="history-pop hidden"></div>
         <div class="tree-head" id="tree-head">
             <span id="tree-label">页面</span>
             <button id="fold-all" type="button" title="全部收起">收起</button>
@@ -212,6 +214,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=40"></script>
+    <script src="/app.js?v=45"></script>
 </body>
 </html>

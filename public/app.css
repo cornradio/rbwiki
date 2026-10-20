@@ -60,18 +60,27 @@ body {
 .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 12px 8px;
+    gap: 8px;
+    padding: 12px 10px 8px;
     font-weight: 700;
     letter-spacing: 0.04em;
 }
-.brand span { flex: 1; }
+.brand span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 #fold-side {
+    flex: none;
     font-size: 12px;
+    font-weight: 400;
     line-height: 1;
-    padding: 4px 8px;
+    padding: 0 8px;
+    height: 28px;
     border: 1px solid rgba(255,255,255,0.16);
-    border-radius: 8px;
+    border-radius: 6px;
     color: var(--side-text);
 }
 .brand button, #unfold {
@@ -83,6 +92,21 @@ body {
     cursor: pointer;
     padding: 2px 4px;
 }
+.brand .brand-icon {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 6px;
+    color: var(--side-text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.brand .brand-icon:hover,
+.brand .brand-icon.on { background: var(--hover); color: var(--side-text); }
+.brand .brand-icon svg { display: block; }
 #unfold {
     display: none;
     position: fixed;
@@ -150,6 +174,38 @@ body {
     background: #f2c57c;
     border-color: #f2c57c;
 }
+.history-pop {
+    position: fixed;
+    z-index: 32;
+    width: 260px;
+    max-height: 360px;
+    overflow: auto;
+    padding: 6px;
+    background: var(--sheet);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.history-pop button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    padding: 8px 10px;
+    cursor: pointer;
+}
+.history-pop button:hover, .history-pop button.on { background: var(--wash); }
+.history-pop .history-name { font-size: 13px; }
+.history-pop .when { color: var(--muted); font-size: 11px; }
+.history-empty { margin: 8px 10px; color: var(--muted); font-size: 13px; }
 .tree-head, .row {
     display: flex;
     align-items: center;
@@ -529,8 +585,16 @@ body.files-mode #trash-banner { display: none !important; }
 .editor p { margin: 0.4em 0; }
 .editor img { max-width: 100%; height: auto; border-radius: 8px; cursor: pointer; }
 .editor img.img-selected { box-shadow: 0 0 0 2px var(--accent); }
+.editor [style*="--ink"] {
+    color: var(--ink) !important;
+    -webkit-text-fill-color: var(--ink) !important;
+}
 .editor a { color: var(--accent); }
-.editor a.file-link { text-decoration: underline; }
+.editor a.file-link {
+    text-decoration-line: underline;
+    text-decoration-style: double;
+    text-underline-offset: 0.16em;
+}
 .editor .cb { cursor: pointer; }
 .editor .code-block {
     margin: 8px 0;
@@ -668,6 +732,39 @@ body.files-mode #trash-banner { display: none !important; }
 }
 .float-menu button:hover { background: var(--wash); }
 .float-menu button.danger { color: var(--danger); }
+.wiki-suggest {
+    position: fixed;
+    z-index: 34;
+    width: 280px;
+    max-height: 280px;
+    overflow: auto;
+    padding: 4px 0;
+    background: var(--sheet);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+}
+.wiki-suggest .group {
+    padding: 6px 12px 2px;
+    color: var(--muted);
+    font-size: 11px;
+}
+.wiki-suggest button {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    padding: 6px 12px;
+    cursor: pointer;
+}
+.wiki-suggest button.on, .wiki-suggest button:hover { background: var(--wash); }
+.wiki-suggest button.file-item { text-decoration: underline; text-decoration-style: double; text-underline-offset: 0.16em; }
+.wiki-suggest .empty { padding: 8px 12px; color: var(--muted); font-size: 13px; }
 .lightbox {
     position: fixed;
     inset: 0;
@@ -827,7 +924,8 @@ body.locked .toolbar,
 body.locked .page-more,
 body.locked .row .add,
 body.locked #add-root,
-body.locked #fold-all { display: none; }
+body.locked #fold-all,
+body.locked .editor .code-bar [data-act="remove"] { display: none; }
 .editor a.wikilink { color: var(--accent); }
 .sheet { position: relative; }
 body.side-collapsed .sidebar { width: 0; min-width: 0; overflow: hidden; }

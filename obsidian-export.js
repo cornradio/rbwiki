@@ -87,7 +87,9 @@ function renderInline(node, ctx) {
         const file = uploadName(node.attrs.href);
         if (file) {
             ctx.uploads.add(file);
-            return `[${label || file}](${attachmentHref(ctx, file)})`;
+            if (ctx.style === 'markdown') return `[${label || file}](${attachmentHref(ctx, file)})`;
+            const target = `attachments/${file}`;
+            return label && label !== file && label !== target ? `[[${target}|${label}]]` : `[[${target}]]`;
         }
         const href = node.attrs.href || '';
         if (!href || href === '#') return label;

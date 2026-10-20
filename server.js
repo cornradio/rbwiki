@@ -350,8 +350,14 @@ function anchorPageId(attrs) {
     return match ? decodeURIComponent(match[1]) : '';
 }
 
+function readableShareHtml(html) {
+    return String(html || '')
+        .replace(/<button\b[^>]*\bdata-act=["']remove["'][^>]*>[\s\S]*?<\/button>/gi, '')
+        .replace(/\scontenteditable=(["'])true\1/gi, '');
+}
+
 function rewriteShareHtml(html, byId) {
-    return String(html || '').replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (full, attrs, inner) => {
+    return readableShareHtml(html).replace(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi, (full, attrs, inner) => {
         const id = anchorPageId(attrs);
         if (id) {
             const target = byId.get(id);

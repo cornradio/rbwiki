@@ -10,6 +10,10 @@ function relKey(vault, file) {
     return path.relative(vault, file).split(path.sep).join('/');
 }
 
+function isRasterFile(file) {
+    return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(file || '');
+}
+
 function escapeHtml(text) {
     return String(text)
         .replace(/&/g, '&amp;')
@@ -24,18 +28,27 @@ function inline(text, ctx) {
         tokens.push(html);
         return key;
     };
-    let src = text.replace(/!\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]/g, (_, name) => {
-        const file = ctx.imageFor(name.trim());
-        if (!file) return hold(`<span class="missing">缺图 ${escapeHtml(name.trim())}</span>`);
+    let src = text.replace(/!\[\[([^\]|#]+)(?:\|([^\]]*))?\]\]/g, (_, name, label) => {
+        const title = name.trim().replace(/^__+|__+$/g, '');
+        const file = ctx.imageFor(title);
+        if (!file) return hold(`<span class="missing">缺图 ${escapeHtml(title)}</span>`);
         const url = ctx.useImage(file);
+        if (!isRasterFile(file)) {
+            const textLabel = (label || path.basename(file)).trim();
+            return hold(`<a class="file-link" href="${url}" title="文件">${escapeHtml(textLabel)}</a>`);
+        }
         return hold(`<img src="${url}" alt="${escapeHtml(path.basename(file))}">`);
     });
     src = src.replace(/\[\[([^\]|#]+)(#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_, name, _hash, label) => {
-        const title = name.trim();
-        const id = ctx.linkFor(title);
-        const textLabel = (label || title).trim();
-        if (!id) return hold(`<span class="missing">${escapeHtml(textLabel)}</span>`);
-        return hold(`<a class="wikilink" data-page="${id}" href="#">${escapeHtml(textLabel)}</a>`);
+        const rawName = name.trim();
+        const forced = /^__.+__$/.test(rawName);
+        const title = rawName.replace(/^__+|__+$/g, '').trim();
+        const file = ctx.imageFor(title);
+        const id = forced ? '' : ctx.linkFor(rawName);
+        const textLabel = (label || (file ? path.basename(title) : title)).trim();
+        if (id) return hold(`<a class="wikilink" data-page="${id}" href="#">${escapeHtml((label || title).trim())}</a>`);
+        if (file) return hold(`<a class="file-link" href="${ctx.useImage(file)}" title="文件">${escapeHtml(textLabel)}</a>`);
+        return hold(`<span class="missing">${escapeHtml((label || rawName).trim())}</span>`);
     });
     src = src.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
         return hold(`<img src="${escapeHtml(url.trim())}" alt="${escapeHtml(alt)}">`);
@@ -279,11 +292,24 @@ export async function importVault(vaultPath, existingPages, options = {}) {
         const isNew = !previous || !previous.id || !existingPages.some((p) => p.id === previous.id);
         let imagesStale = false;
         if (!isNew && previous.sourceHash === hash && !previous.deletedAt) {
-            const re = /!\[\[([^\]|#]+)/g;
+            const re = /(!)?\[\[([^\]|#]+)/g;
             let match;
+            const content = String(previous.content || '');
             while ((match = re.exec(raw))) {
-                const img = imageByName.get(path.basename(match[1].trim()).toLowerCase());
-                if (img && !(await assetFresh(img))) { imagesStale = true; break; }
+                const titled = match[2].trim().replace(/^__+|__+$/g, '');
+                const asset = imageByName.get(path.basename(titled).toLowerCase());
+                if (!asset) continue;
+                const embed = match[1] === '!';
+                if (embed && !(await assetFresh(asset))) { imagesStale = true; break; }
+                if (embed && isRasterFile(asset)) continue;
+                if (!path.extname(titled) || /\.md$/i.test(titled)) continue;
+                if (!(await assetFresh(asset))) { imagesStale = true; break; }
+                const url = '/uploads/' + assetName(asset);
+                if (!content.includes(url)) { imagesStale = true; break; }
+                if (/\.svg$/i.test(asset) && new RegExp('<img\\b[^>]*src="' + url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(content)) {
+                    imagesStale = true;
+                    break;
+                }
             }
             if (!imagesStale && (previous.parentId || null) === parent.id && previous.title === title) {
                 if (!pages.includes(previous)) pages.push(previous);
