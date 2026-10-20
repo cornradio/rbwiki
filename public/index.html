@@ -14,7 +14,7 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=40">
+    <link rel="stylesheet" href="/app.css?v=43">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
@@ -64,6 +64,17 @@
             </div>
         </div>
         <div id="trash-banner" class="trash-banner hidden">回收站。右键一篇可以恢复，或永久删除。</div>
+        <div id="vault-seal" class="vault-seal hidden">
+            <div class="seal-plate">
+                <p class="seal-kicker">知识库</p>
+                <h2>需要解锁才能查看</h2>
+                <p>只读分享页不受影响。密码和验证码只用来打开整个库。</p>
+                <label class="sec-field">密码<input id="seal-pw" type="password" autocomplete="current-password"></label>
+                <label class="sec-field" id="seal-code-field">验证码<input id="seal-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6 位"></label>
+                <button type="button" id="seal-go">解锁</button>
+                <p id="seal-msg" class="import-msg"></p>
+            </div>
+        </div>
         <div id="empty" class="empty hidden">
             <p>还没有页面。</p>
             <button id="empty-add" type="button">新建第一页</button>
@@ -149,26 +160,76 @@
                 <h2>设置</h2>
                 <button type="button" id="settings-close" title="关闭">×</button>
             </div>
-            <section>
-                <h3>写入密码</h3>
-                <p id="auth-hint"></p>
-                <input id="pw" type="password" placeholder="密码" autocomplete="current-password">
-                <div class="dialog-actions start">
-                    <button type="button" id="pw-login">解锁</button>
-                    <button type="button" id="pw-set" class="hidden">保存密码</button>
-                    <button type="button" id="pw-logout" class="hidden">锁定</button>
+            <section class="sec" id="security">
+                <div class="sec-status" id="sec-status"></div>
+                <div id="sec-login">
+                    <h3>解锁</h3>
+                    <p id="auth-hint"></p>
+                    <label class="sec-field">密码<input id="pw" type="password" autocomplete="current-password"></label>
+                    <label class="sec-field hidden" id="pw-code-field">验证码<input id="pw-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6 位"></label>
+                    <div class="dialog-actions start">
+                        <button type="button" id="pw-login">解锁</button>
+                    </div>
+                </div>
+                <div id="sec-manage" class="hidden">
+                    <div class="sec-row">
+                        <div>
+                            <h3>密码</h3>
+                            <p>解锁之后才能改安全设置，也能编辑整个知识库。</p>
+                            <label class="sec-field">新密码<input id="pw-new" type="password" autocomplete="new-password" placeholder="至少 4 位"></label>
+                        </div>
+                    </div>
+                    <div class="sec-row">
+                        <div>
+                            <h3>两步验证</h3>
+                            <p id="totp-hint">用手机验证器扫码配对。解锁时在密码后再填 6 位验证码。</p>
+                        </div>
+                        <button type="button" id="totp-switch" class="sec-switch" role="switch" aria-checked="false" aria-label="两步验证"><span></span></button>
+                    </div>
+                    <div id="totp-panel" class="totp-panel hidden">
+                        <div class="totp-card">
+                            <img id="totp-qr" alt="验证器二维码">
+                            <div>
+                                <p>打开验证器，扫描二维码。扫不了就手动输入下面的密钥。</p>
+                                <code id="totp-secret"></code>
+                                <label class="sec-field">验证器上的 6 位<input id="totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></label>
+                                <div class="dialog-actions start">
+                                    <button type="button" id="totp-confirm">确认配对</button>
+                                    <button type="button" id="totp-cancel">取消</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="totp-off" class="hidden">
+                            <label class="sec-field">输入当前验证码后关闭<input id="totp-off-code" inputmode="numeric" autocomplete="one-time-code" maxlength="8"></label>
+                            <div class="dialog-actions start">
+                                <button type="button" id="totp-disable">关闭两步验证</button>
+                                <button type="button" id="totp-off-cancel">取消</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="sec-row">
+                        <div>
+                            <h3>浏览整个知识库</h3>
+                            <p>打开时，不解锁也能看目录和页面，但改不了。关掉之后必须解锁才能看整个库。只读分享链接一直可以打开。</p>
+                        </div>
+                        <button type="button" id="browse-switch" class="sec-switch" role="switch" aria-checked="true" aria-label="浏览整个知识库"><span></span></button>
+                    </div>
+                    <details class="sec-fold" id="home-fold">
+                        <summary>主页面</summary>
+                        <p>现在默认是 /rbWiki。改成一段别人猜不到的路径后，旧地址就打不开了。改完会立刻跳到新地址。</p>
+                        <input id="home-path" type="text" autocomplete="off" spellcheck="false" maxlength="64">
+                        <div class="dialog-actions start">
+                            <button type="button" id="home-random">随机一段</button>
+                            <button type="button" id="home-save">保存地址</button>
+                        </div>
+                    </details>
+                    <div class="dialog-actions start">
+                        <button type="button" id="pw-set">保存密码</button>
+                        <button type="button" id="pw-logout">锁定</button>
+                    </div>
                 </div>
             </section>
             <div id="settings-tools" class="hidden">
-                <section>
-                    <h3>主页面</h3>
-                    <p class="hint">现在默认是 /rbWiki。改成一段别人猜不到的路径后，旧地址就打不开了。改完会立刻跳到新地址。</p>
-                    <input id="home-path" type="text" autocomplete="off" spellcheck="false" maxlength="64">
-                    <div class="dialog-actions start">
-                        <button type="button" id="home-random">随机一段</button>
-                        <button type="button" id="home-save">保存地址</button>
-                    </div>
-                </section>
                 <section>
                     <h3>库</h3>
                     <div class="dialog-actions start">
@@ -214,6 +275,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=45"></script>
+    <script src="/app.js?v=46"></script>
 </body>
 </html>

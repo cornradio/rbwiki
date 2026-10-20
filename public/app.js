@@ -16,6 +16,7 @@ let saveTimer = null;
 let savedRange = null;
 let trashMode = false;
 let canWrite = true;
+let authState = { hasPassword: false, canWrite: true, totp: false, browseLocked: false };
 let editorComposing = false;
 let finderMode = 'all';
 let finderIndex = 0;
@@ -71,13 +72,67 @@ function escapeHtml(text) {
     return String(text).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 }
 
+function vaultSealed() {
+    return !!(authState.browseLocked && authState.hasPassword && !canWrite);
+}
+
+function paintVaultSeal() {
+    const sealed = vaultSealed();
+    document.body.classList.toggle('vault-sealed', sealed);
+    document.getElementById('vault-seal').classList.toggle('hidden', !sealed);
+    document.getElementById('seal-code-field').classList.toggle('hidden', !authState.totp);
+}
+
+function setSwitch(id, on) {
+    const el = document.getElementById(id);
+    if (el) el.setAttribute('aria-checked', on ? 'true' : 'false');
+}
+
+function paintSecurity(data) {
+    authState = {
+        hasPassword: !!data.hasPassword,
+        canWrite: !!data.canWrite,
+        totp: !!data.totp,
+        browseLocked: !!data.browseLocked
+    };
+    canWrite = authState.canWrite;
+    document.body.classList.toggle('locked', !canWrite);
+    applyLock();
+    paintVaultSeal();
+    const unlocked = canWrite;
+    document.getElementById('sec-login').classList.toggle('hidden', unlocked || !authState.hasPassword);
+    document.getElementById('sec-manage').classList.toggle('hidden', !unlocked);
+    document.getElementById('settings-tools').classList.toggle('hidden', !unlocked);
+    document.getElementById('pw-code-field').classList.toggle('hidden', !authState.totp);
+    document.getElementById('pw-logout').classList.toggle('hidden', !authState.hasPassword);
+    setSwitch('totp-switch', authState.totp);
+    setSwitch('browse-switch', !authState.browseLocked);
+    document.getElementById('browse-switch').disabled = !authState.hasPassword;
+    document.getElementById('totp-hint').textContent = authState.totp
+        ? '已和验证器配对。解锁时要在密码后面再填 6 位验证码。'
+        : '用手机验证器扫码配对。解锁时在密码后再填 6 位验证码。';
+    const pills = [
+        [unlocked ? '已解锁' : '未解锁', unlocked],
+        [authState.hasPassword ? '密码已设置' : '还没有密码', authState.hasPassword],
+        [authState.totp ? '两步验证开' : '两步验证关', authState.totp],
+        [authState.browseLocked ? '整库需解锁' : '整库可浏览', !authState.browseLocked]
+    ];
+    document.getElementById('sec-status').innerHTML = pills.map(([text, on]) => `<span class="sec-pill${on ? ' on' : ''}">${escapeHtml(text)}</span>`).join('');
+    document.getElementById('auth-hint').textContent = authState.hasPassword
+        ? (unlocked ? '已解锁。可以改下面的安全设置。' : (authState.totp ? '输入密码，再填验证器上的 6 位数字。' : '输入密码后才能查看和编辑整个知识库。'))
+        : '还没有密码。设一个之后，不输入密码就不能改库。';
+}
+
 async function api(url, opts) {
     const res = await fetch(url, opts);
     if (res.status === 401) {
-        canWrite = false;
-        document.body.classList.add('locked');
-        applyLock();
-        statusEl.textContent = '需要密码才能修改';
+        await refreshAuth();
+        if (vaultSealed()) {
+            pages = [];
+            renderTree();
+            showCurrent();
+        }
+        statusEl.textContent = vaultSealed() ? '需要解锁才能查看知识库' : '需要密码才能修改';
         openSettings();
     }
     return res;
@@ -157,15 +212,28 @@ function applyLock() {
 async function refreshAuth() {
     const res = await fetch('/api/auth/status');
     const data = await res.json();
-    canWrite = !!data.canWrite;
-    document.body.classList.toggle('locked', !canWrite);
-    applyLock();
+    paintSecurity(data);
     return data;
 }
 
 async function load(selectId) {
+    if (vaultSealed()) {
+        pages = [];
+        renderTree();
+        showCurrent();
+        paintVaultSeal();
+        return;
+    }
     const res = await fetch('/api/pages' + (trashMode ? '?deleted=1' : ''));
+    if (res.status === 401) {
+        await refreshAuth();
+        pages = [];
+        renderTree();
+        showCurrent();
+        return;
+    }
     pages = await res.json();
+    if (!Array.isArray(pages)) pages = [];
     if (trashMode && !trashFolded) {
         const ids = new Set(pages.map((p) => p.id));
         pages.forEach((page) => {
@@ -738,17 +806,24 @@ function randomHomePath() {
 function openSettings() {
     document.getElementById('settings').classList.remove('hidden');
     document.getElementById('home-path').value = currentHomePath();
-    return refreshAuth().then((data) => {
-        const locked = !data.canWrite;
-        document.getElementById('settings-tools').classList.toggle('hidden', locked);
-        document.getElementById('pw-login').classList.toggle('hidden', !data.hasPassword || data.canWrite);
-        document.getElementById('pw-set').classList.toggle('hidden', locked);
-        document.getElementById('pw-logout').classList.toggle('hidden', !data.hasPassword || locked);
-        document.getElementById('auth-hint').textContent = data.hasPassword
-            ? (data.canWrite ? '已解锁。' : '输入密码后才能改设置。')
-            : '还没有密码。设一个之后，不输入密码就不能改。';
-        return data;
+    return refreshAuth();
+}
+
+async function submitUnlock(password, code) {
+    const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password, code })
     });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, data };
+    document.getElementById('pw').value = '';
+    document.getElementById('pw-code').value = '';
+    document.getElementById('seal-pw').value = '';
+    document.getElementById('seal-code').value = '';
+    await refreshAuth();
+    if (!vaultSealed()) await load(sessionStorage.getItem('rbw-page') || currentId);
+    return { ok: true, data };
 }
 
 function closeSettings() {
@@ -1278,40 +1353,138 @@ document.getElementById('home-save').addEventListener('click', async () => {
 
 document.getElementById('pw-login').addEventListener('click', async () => {
     const msg = document.getElementById('settings-msg');
-    const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: document.getElementById('pw').value })
-    });
-    const data = await res.json();
-    msg.textContent = res.ok ? '已解锁' : (data.error || '解锁失败');
-    if (res.ok) {
-        document.getElementById('pw').value = '';
-        await refreshAuth();
-        openSettings();
-    }
+    const result = await submitUnlock(document.getElementById('pw').value, document.getElementById('pw-code').value);
+    msg.textContent = result.ok ? '已解锁' : (result.data.error || '解锁失败');
+    if (result.data && result.data.needCode) document.getElementById('pw-code-field').classList.remove('hidden');
 });
+
+document.getElementById('seal-go').addEventListener('click', async () => {
+    const msg = document.getElementById('seal-msg');
+    const result = await submitUnlock(document.getElementById('seal-pw').value, document.getElementById('seal-code').value);
+    msg.textContent = result.ok ? '' : (result.data.error || '解锁失败');
+    if (result.data && result.data.needCode) document.getElementById('seal-code-field').classList.remove('hidden');
+});
+
+function unlockOnEnter(input, run) {
+    input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        run();
+    });
+}
+unlockOnEnter(document.getElementById('pw'), () => document.getElementById('pw-login').click());
+unlockOnEnter(document.getElementById('pw-code'), () => document.getElementById('pw-login').click());
+unlockOnEnter(document.getElementById('seal-pw'), () => document.getElementById('seal-go').click());
+unlockOnEnter(document.getElementById('seal-code'), () => document.getElementById('seal-go').click());
 
 document.getElementById('pw-set').addEventListener('click', async () => {
     const msg = document.getElementById('settings-msg');
     const res = await fetch('/api/auth/password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: document.getElementById('pw').value })
+        body: JSON.stringify({ password: document.getElementById('pw-new').value })
     });
     const data = await res.json().catch(() => ({}));
     msg.textContent = res.ok ? '密码已保存' : (data.error || '没有保存');
     if (res.ok) {
-        document.getElementById('pw').value = '';
+        document.getElementById('pw-new').value = '';
         await refreshAuth();
     }
 });
 
 document.getElementById('pw-logout').addEventListener('click', async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
+    pages = [];
     await refreshAuth();
+    if (vaultSealed()) {
+        renderTree();
+        showCurrent();
+    }
     document.getElementById('settings-msg').textContent = '已锁定';
-    openSettings();
+});
+
+document.getElementById('browse-switch').addEventListener('click', async () => {
+    const msg = document.getElementById('settings-msg');
+    const publicNow = document.getElementById('browse-switch').getAttribute('aria-checked') === 'true';
+    const res = await api('/api/auth/browse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ locked: publicNow })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        msg.textContent = data.error || '没有改';
+        return;
+    }
+    paintSecurity(data);
+    msg.textContent = data.browseLocked ? '未解锁时不能浏览整个知识库' : '未解锁时也可以浏览整个知识库';
+});
+
+document.getElementById('totp-switch').addEventListener('click', async () => {
+    const msg = document.getElementById('settings-msg');
+    const panel = document.getElementById('totp-panel');
+    const card = panel.querySelector('.totp-card');
+    const off = document.getElementById('totp-off');
+    if (authState.totp) {
+        panel.classList.remove('hidden');
+        card.classList.add('hidden');
+        off.classList.remove('hidden');
+        document.getElementById('totp-off-code').focus();
+        return;
+    }
+    const res = await api('/api/auth/totp/begin', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        msg.textContent = data.error || '没有开始配对';
+        return;
+    }
+    document.getElementById('totp-qr').src = data.qr;
+    document.getElementById('totp-secret').textContent = String(data.secret || '').replace(/(.{4})/g, '$1 ').trim();
+    panel.classList.remove('hidden');
+    card.classList.remove('hidden');
+    off.classList.add('hidden');
+    msg.textContent = '用手机扫码，再填验证器上的 6 位数字';
+});
+
+document.getElementById('totp-cancel').addEventListener('click', () => {
+    document.getElementById('totp-panel').classList.add('hidden');
+});
+document.getElementById('totp-off-cancel').addEventListener('click', () => {
+    document.getElementById('totp-panel').classList.add('hidden');
+});
+document.getElementById('totp-confirm').addEventListener('click', async () => {
+    const msg = document.getElementById('settings-msg');
+    const res = await api('/api/auth/totp/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: document.getElementById('totp-code').value })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        msg.textContent = data.error || '没有配对上';
+        return;
+    }
+    document.getElementById('totp-code').value = '';
+    document.getElementById('totp-panel').classList.add('hidden');
+    paintSecurity(data);
+    msg.textContent = '两步验证已配对';
+});
+document.getElementById('totp-disable').addEventListener('click', async () => {
+    const msg = document.getElementById('settings-msg');
+    const res = await api('/api/auth/totp/disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: document.getElementById('totp-off-code').value })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        msg.textContent = data.error || '没有关闭';
+        return;
+    }
+    document.getElementById('totp-off-code').value = '';
+    document.getElementById('totp-panel').classList.add('hidden');
+    paintSecurity(data);
+    msg.textContent = '两步验证已关闭';
 });
 
 document.getElementById('export-lib').addEventListener('click', async () => {
@@ -3860,6 +4033,7 @@ treeHead.addEventListener('drop', (e) => {
 if (localStorage.getItem('rbw-side') === 'closed') setSide(false);
 
 refreshAuth().then(async () => {
+    if (vaultSealed()) return;
     await load(currentId);
     await followHeadingLink();
 });

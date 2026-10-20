@@ -23,7 +23,8 @@ import {
 } from './data-manager.js';
 import { importVault, importPreparedVault, importVaultZip, suggestVaults } from './obsidian-import.js';
 import { archiveObsidian, archiveMarkdown } from './obsidian-export.js';
-import { loadAuth, loadSessions, setPassword, setHomePath, checkPassword, createSession, dropSession, validSession } from './auth.js';
+import QRCode from 'qrcode';
+import { loadAuth, loadSessions, setPassword, setHomePath, checkPassword, createSession, dropSession, validSession, totpEnabled, verifyTotp, setBrowseLocked, beginTotp, confirmTotp, disableTotp } from './auth.js';
 import { archiveLibrary, importLibrary } from './library.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -81,6 +82,23 @@ function guardWrite(req, res) {
     return false;
 }
 
+function guardRead(req, res) {
+    if (!auth.password || !auth.browseLocked) return true;
+    if (validSession(readCookie(req))) return true;
+    res.status(401).json({ error: '需要解锁才能查看知识库' });
+    return false;
+}
+
+function authStatus(req) {
+    return {
+        hasPassword: !!auth.password,
+        canWrite: !auth.password || validSession(readCookie(req)),
+        totp: totpEnabled(auth),
+        browseLocked: !!(auth.password && auth.browseLocked),
+        shareSpace: auth.shareSpace
+    };
+}
+
 function publicPage(page) {
     if (!page) return page;
     const copy = { ...page };
@@ -89,14 +107,18 @@ function publicPage(page) {
 }
 
 app.get('/api/auth/status', (req, res) => {
-    const canWrite = !auth.password || validSession(readCookie(req));
-    res.json({ hasPassword: !!auth.password, canWrite, shareSpace: auth.shareSpace });
+    res.json(authStatus(req));
 });
 
 app.post('/api/auth/login', async (req, res) => {
     if (!auth.password) return res.status(400).json({ error: '还没有设置密码' });
     const ok = await checkPassword(req.body && req.body.password, auth);
     if (!ok) return res.status(401).json({ error: '密码不对' });
+    if (totpEnabled(auth)) {
+        const code = req.body && req.body.code;
+        if (!code) return res.status(401).json({ error: '还要填写验证码', needCode: true });
+        if (!verifyTotp(auth.totp.secret, code)) return res.status(401).json({ error: '验证码不对', needCode: true });
+    }
     writeCookie(res, await createSession());
     res.json({ ok: true });
 });
@@ -130,6 +152,42 @@ app.post('/api/auth/home', async (req, res) => {
     res.json({ path: name });
 });
 
+app.post('/api/auth/browse', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const locked = !!(req.body && req.body.locked);
+    if (locked && !auth.password) return res.status(400).json({ error: '先设置密码，才能关掉公开浏览' });
+    auth = await setBrowseLocked(locked);
+    res.json(authStatus(req));
+});
+
+app.post('/api/auth/totp/begin', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    if (!auth.password) return res.status(400).json({ error: '先设置密码，再配对验证器' });
+    const started = await beginTotp();
+    auth = started.auth;
+    const secret = started.secret;
+    const label = encodeURIComponent('RBWiki:库');
+    const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent('RBWiki')}&digits=6&period=30`;
+    const qr = await QRCode.toDataURL(uri, { margin: 1, width: 280, errorCorrectionLevel: 'M', color: { dark: '#1c1915', light: '#fffdf8' } });
+    res.json({ secret, qr });
+});
+
+app.post('/api/auth/totp/confirm', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const result = await confirmTotp(req.body && req.body.code);
+    auth = result.auth;
+    if (!result.ok) return res.status(400).json({ error: result.error || '没有配对上' });
+    res.json(authStatus(req));
+});
+
+app.post('/api/auth/totp/disable', async (req, res) => {
+    if (!guardWrite(req, res)) return;
+    const result = await disableTotp(req.body && req.body.code);
+    auth = result.auth;
+    if (!result.ok) return res.status(400).json({ error: result.error || '没有关闭' });
+    res.json(authStatus(req));
+});
+
 app.post('/api/auth/password', async (req, res) => {
     const password = String((req.body && req.body.password) || '');
     if (password.length < 4) return res.status(400).json({ error: '密码至少 4 位' });
@@ -142,12 +200,14 @@ app.post('/api/auth/password', async (req, res) => {
 });
 
 app.get('/api/pages', async (req, res) => {
+    if (!guardRead(req, res)) return;
     const deleted = req.query.deleted === '1' ? 'only' : undefined;
     const pages = await listPages({ deleted });
     res.json(pages.map(publicPage));
 });
 
 app.get('/api/obsidian/vaults', async (req, res) => {
+    if (!guardWrite(req, res)) return;
     res.json(await suggestVaults());
 });
 
@@ -402,6 +462,7 @@ app.get('/api/view/:token', async (req, res) => {
 });
 
 app.get('/api/pages/:id', async (req, res) => {
+    if (!guardRead(req, res)) return;
     try {
         res.json(publicPage(await getPage(req.params.id)));
     } catch {
