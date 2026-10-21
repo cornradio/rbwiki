@@ -177,35 +177,49 @@ body {
 .history-pop {
     position: fixed;
     z-index: 32;
-    width: 260px;
-    max-height: 360px;
+    width: 280px;
+    max-height: 320px;
     overflow: auto;
-    padding: 6px;
+    padding: 4px;
     background: var(--sheet);
     color: var(--ink);
     border: 1px solid var(--line);
-    border-radius: 12px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(28, 25, 21, 0.12);
 }
 .history-pop button {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     width: 100%;
     border: 0;
-    border-radius: 8px;
+    border-radius: 4px;
     background: transparent;
     color: inherit;
     font: inherit;
+    font-size: 13px;
+    line-height: 1.35;
     text-align: left;
-    padding: 8px 10px;
+    padding: 2px 8px;
     cursor: pointer;
 }
 .history-pop button:hover, .history-pop button.on { background: var(--wash); }
-.history-pop .history-name { font-size: 13px; }
-.history-pop .when { color: var(--muted); font-size: 11px; }
-.history-empty { margin: 8px 10px; color: var(--muted); font-size: 13px; }
+.history-pop .history-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+.history-pop .when {
+    flex: none;
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+.history-empty { margin: 6px 8px; color: var(--muted); font-size: 12px; }
 .tree-head, .row {
     display: flex;
     align-items: center;
@@ -364,6 +378,50 @@ body.files-mode #toc { display: none !important; }
     padding: 48px 32px 80px 72px;
 }
 .empty { color: var(--muted); }
+.home-hello {
+    margin: 0 0 8px;
+    color: var(--ink);
+    font: 700 34px/1.25 "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "STSong", "PingFang SC", "Hiragino Sans GB", "SimSun", serif;
+}
+.home-hint { margin: 0 0 18px; }
+.home-history { margin-top: 28px; }
+.home-history h2 {
+    margin: 0 0 4px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+.home-history button {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    margin: 0;
+    padding: 1px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 14px;
+    line-height: 1.35;
+    text-align: left;
+    cursor: pointer;
+}
+.home-history button:hover { background: var(--wash); }
+.home-history .home-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.home-history .when {
+    flex: none;
+    color: var(--muted);
+    font-size: 12px;
+}
 body.files-mode .tree-head,
 body.files-mode .tree,
 body.files-mode #page,
@@ -437,17 +495,19 @@ body.files-mode #trash-banner { display: none !important; }
     cursor: pointer;
 }
 .files button.danger { color: #a33b32; }
-.empty button, .toolbar button {
+#empty-add, .toolbar button {
     font: inherit;
     cursor: pointer;
 }
-.empty button {
-    background: var(--ink);
-    color: white;
-    border: 0;
-    border-radius: 8px;
-    padding: 8px 14px;
+#empty-add {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    padding: 5px 14px;
+    font-size: 14px;
 }
+#empty-add:hover { background: var(--accent); color: #fffdf8; }
 .title {
     flex: 1;
     min-width: 0;
@@ -624,14 +684,18 @@ body.files-mode #trash-banner { display: none !important; }
 .editor .code-block pre {
     margin: 0;
     padding: 10px 12px;
+    min-height: 1.7em;
     background: transparent;
     white-space: pre-wrap;
     white-space: break-spaces;
     overflow-wrap: anywhere;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
     font-size: 13px;
+    line-height: 1.7;
     outline: none;
+    cursor: text;
 }
+.editor .code-block + div { min-height: 1.7em; }
 .editor pre, .editor code {
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Cascadia Mono", monospace;
     font-size: 13px;
@@ -939,7 +1003,17 @@ body.side-collapsed #unfold { display: inline-flex; align-items: center; justify
     }
     body.side-collapsed .sidebar { width: 0; }
     .sheet { width: 100%; }
-    .page, .empty { padding: 52px 16px 72px 56px; }
+    .page, .empty { padding: 52px 16px 72px; }
+    .sheet { overflow-x: clip; }
+    .editor h1, .editor h2, .editor h3, .editor h4 { padding-left: 2.4em; }
+    .editor h1::before,
+    .editor h2::before,
+    .editor h3::before,
+    .editor h4::before {
+        left: 0;
+        width: 2.2em;
+        text-align: left;
+    }
     .files { padding: 28px 16px 72px; }
     .theme-picks { flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
 }

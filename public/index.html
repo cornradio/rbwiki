@@ -14,7 +14,7 @@
             } catch (e) {}
         })();
     </script>
-    <link rel="stylesheet" href="/app.css?v=43">
+    <link rel="stylesheet" href="/app.css?v=47">
 </head>
 <body>
     <aside class="sidebar" id="sidebar">
@@ -63,7 +63,7 @@
                 <button type="button" data-theme="dark">黑</button>
             </div>
         </div>
-        <div id="trash-banner" class="trash-banner hidden">回收站。右键一篇可以恢复，或永久删除。</div>
+        <div id="trash-banner" class="trash-banner hidden">回收站里的页面只读。右键可以恢复，或永久删除。</div>
         <div id="vault-seal" class="vault-seal hidden">
             <div class="seal-plate">
                 <p class="seal-kicker">知识库</p>
@@ -75,9 +75,11 @@
                 <p id="seal-msg" class="import-msg"></p>
             </div>
         </div>
-        <div id="empty" class="empty hidden">
-            <p>还没有页面。</p>
-            <button id="empty-add" type="button">新建第一页</button>
+        <div id="empty" class="empty home hidden">
+            <p id="home-hello" class="home-hello">欢迎使用 RBWiki</p>
+            <p id="home-hint" class="home-hint">从最近看过的页面继续，或新建一篇。</p>
+            <button id="empty-add" type="button">新建文章</button>
+            <div id="home-history" class="home-history"></div>
         </div>
         <section id="files" class="files hidden">
             <div class="files-bar">
@@ -275,6 +277,6 @@
         </div>
     </div>
     <div id="lightbox" class="lightbox hidden"></div>
-    <script src="/app.js?v=46"></script>
+    <script src="/app.js?v=53"></script>
 </body>
 </html>

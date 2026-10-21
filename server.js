@@ -697,8 +697,12 @@ app.get('/', (req, res) => {
 });
 
 app.use((req, res, next) => {
-    const name = req.path.replace(/^\/+|\/+$/g, '');
-    if (name && name.toLowerCase() === homeName().toLowerCase()) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    const parts = req.path.split('/').filter(Boolean);
+    if (!parts.length) return next();
+    let head = parts[0];
+    try { head = decodeURIComponent(head); } catch (e) {}
+    if (head.toLowerCase() === homeName().toLowerCase()) {
         return res.sendFile(path.join(publicDir, 'index.html'));
     }
     next();

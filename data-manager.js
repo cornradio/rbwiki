@@ -69,6 +69,7 @@ export async function createPage({ title, parentId, content }) {
 
 export async function updatePage(id, patch) {
     const page = await getPage(id);
+    if (page.deletedAt) throw new Error('not found');
     const next = { ...page, updatedAt: Date.now() };
     if (patch.title !== undefined) next.title = String(patch.title).trim() || '未命名';
     if (patch.content !== undefined) next.content = patch.content;

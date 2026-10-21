@@ -11,7 +11,18 @@ const finderResults = document.getElementById('finder-results');
 const menuEl = document.getElementById('menu');
 
 let pages = [];
-let currentId = sessionStorage.getItem('rbw-page');
+function pageIdFromHash() {
+    const raw = decodeURIComponent(location.hash.replace(/^#/, ''));
+    const id = raw.split('/')[0];
+    return /^[0-9a-f-]{36}$/i.test(id) ? id : '';
+}
+
+let currentId = pageIdFromHash() || null;
+let addressReady = false;
+let addressStarted = false;
+let addressPageId = null;
+let locationPush = false;
+let suspendLocation = false;
 let saveTimer = null;
 let savedRange = null;
 let trashMode = false;
@@ -205,8 +216,6 @@ function applyLock() {
     document.body.classList.toggle('trash', trashMode);
     document.getElementById('trash-banner').classList.toggle('hidden', !trashMode);
     document.getElementById('tree-label').textContent = trashMode ? '回收站' : '页面';
-    const emptyText = document.querySelector('#empty p');
-    if (emptyText) emptyText.textContent = trashMode ? '回收站是空的。' : '还没有页面。';
 }
 
 async function refreshAuth() {
@@ -216,7 +225,7 @@ async function refreshAuth() {
     return data;
 }
 
-async function load(selectId) {
+async function load(selectId, options) {
     if (vaultSealed()) {
         pages = [];
         renderTree();
@@ -226,6 +235,7 @@ async function load(selectId) {
     }
     const res = await fetch('/api/pages' + (trashMode ? '?deleted=1' : ''));
     if (res.status === 401) {
+        addressReady = false;
         await refreshAuth();
         pages = [];
         renderTree();
@@ -242,10 +252,13 @@ async function load(selectId) {
         trashFolded = true;
     }
     if (selectId) currentId = selectId;
-    if (!pages.some((p) => p.id === currentId)) currentId = pages[0] ? pages[0].id : null;
+    if (!pages.some((p) => p.id === currentId)) currentId = null;
+    if (!currentId && options && options.fromPath && !trashMode) currentId = pageIdFromPath() || null;
     if (!trashMode) sessionStorage.setItem('rbw-page', currentId || '');
+    addressReady = true;
     renderTree();
     showCurrent();
+    if (!currentId && options && options.fromPath && pathParts().length > 1) statusEl.textContent = '没有这个页面';
 }
 
 function renderTree() {
@@ -354,10 +367,16 @@ function showCurrent() {
     emptyEl.classList.toggle('hidden', has);
     pageEl.classList.toggle('hidden', !has);
     applyLock();
-    if (!page) return;
+    if (!page) {
+        renderHome();
+        document.title = 'RBWiki';
+        syncAddress();
+        return;
+    }
     if (document.activeElement !== titleEl) titleEl.value = page.title || '';
     if (document.activeElement !== editorEl) {
         editorEl.innerHTML = page.content || '';
+        normalizeCodeBlocks();
         decorateHeadings();
     }
     deselectImage();
@@ -367,10 +386,43 @@ function showCurrent() {
     applyLock();
     document.title = (page.title || '未命名') + ' · RBWiki';
     noteVisit(currentId, navLock);
+    syncAddress();
+}
+
+async function showArchivedPage(page) {
+    const entering = viewMode !== 'trash';
+    if (entering) locationPush = true;
+    viewMode = 'trash';
+    trashMode = true;
+    document.getElementById('mode-lib').classList.remove('on');
+    document.getElementById('mode-trash').classList.add('on');
+    document.getElementById('mode-files').classList.remove('on');
+    document.body.classList.remove('files-mode');
+    document.getElementById('files').classList.add('hidden');
+    if (entering) {
+        trashFolded = false;
+        await load(page.id);
+        return true;
+    }
+    currentId = page.id;
+    const idx = pages.findIndex((item) => item.id === page.id);
+    if (idx >= 0) pages[idx] = page;
+    else pages.push(page);
+    renderTree();
+    showCurrent();
+    return true;
 }
 
 async function openPage(id) {
     flushSave();
+    if (!suspendLocation) locationPush = true;
+    const res = await fetch('/api/pages/' + id);
+    if (!res.ok) {
+        statusEl.textContent = '页面打不开';
+        return false;
+    }
+    const page = await res.json();
+    if (page.deletedAt) return showArchivedPage(page);
     if (viewMode !== 'lib') {
         viewMode = 'lib';
         trashMode = false;
@@ -383,20 +435,15 @@ async function openPage(id) {
         if (listed.ok) pages = await listed.json();
         applyLock();
     }
-    const res = await fetch('/api/pages/' + id);
-    if (!res.ok) {
-        statusEl.textContent = '页面打不开';
-        return false;
-    }
     currentId = id;
     sessionStorage.setItem('rbw-page', id);
-    const page = await res.json();
     const idx = pages.findIndex((p) => p.id === id);
     if (idx >= 0) pages[idx] = page;
     else pages.push(page);
     renderTree();
     titleEl.value = page.title || '';
     editorEl.innerHTML = page.content || '';
+    normalizeCodeBlocks();
     decorateHeadings();
     deselectImage();
     closeLinkBar(false);
@@ -407,7 +454,78 @@ async function openPage(id) {
     pageEl.classList.remove('hidden');
     applyLock();
     noteVisit(id, navLock);
+    syncAddress();
     return true;
+}
+
+function renderHome() {
+    const hello = document.getElementById('home-hello');
+    const hint = document.getElementById('home-hint');
+    const add = document.getElementById('empty-add');
+    const box = document.getElementById('home-history');
+    if (trashMode) {
+        hello.textContent = '回收站是空的';
+        hint.textContent = '删掉的页面会出现在左边。';
+    } else if (!pages.length) {
+        hello.textContent = '欢迎使用 RBWiki';
+        hint.textContent = '还没有页面。新建一篇开始写。';
+    } else {
+        hello.textContent = '欢迎使用 RBWiki';
+        hint.textContent = '从最近看过的页面继续，或新建一篇。';
+    }
+    if (add) add.textContent = '新建文章';
+    if (!box) return;
+    box.innerHTML = '';
+    const title = document.createElement('h2');
+    title.textContent = '最近看过';
+    box.appendChild(title);
+    const list = readHistory();
+    if (!list.length) {
+        const empty = document.createElement('p');
+        empty.className = 'home-hint';
+        empty.textContent = '还没有看过的页面。';
+        box.appendChild(empty);
+        return;
+    }
+    list.forEach((item) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const page = pages.find((entry) => entry.id === item.id);
+        const name = document.createElement('span');
+        name.className = 'home-name';
+        name.textContent = (page && page.title) || item.title || '未命名';
+        const when = document.createElement('span');
+        when.className = 'when';
+        when.textContent = historyWhen(item.at);
+        btn.append(name, when);
+        btn.addEventListener('click', () => openPage(item.id));
+        box.appendChild(btn);
+    });
+}
+
+async function showHome() {
+    flushSave();
+    locationPush = true;
+    currentId = null;
+    sessionStorage.removeItem('rbw-page');
+    if (trashMode || viewMode !== 'lib') {
+        viewMode = 'lib';
+        trashMode = false;
+        document.getElementById('mode-lib').classList.add('on');
+        document.getElementById('mode-trash').classList.remove('on');
+        document.getElementById('mode-files').classList.remove('on');
+        document.body.classList.remove('files-mode');
+        document.getElementById('files').classList.add('hidden');
+        await load(null);
+        return;
+    }
+    pageEl.classList.add('hidden');
+    emptyEl.classList.remove('hidden');
+    renderTree();
+    renderHome();
+    applyLock();
+    document.title = 'RBWiki';
+    syncAddress();
 }
 
 function readHistory() {
@@ -523,7 +641,7 @@ function showHistory() {
     renderHistory();
     pop.classList.remove('hidden');
     const rect = btn.getBoundingClientRect();
-    const width = 260;
+    const width = 280;
     pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
     pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 80) + 'px';
 }
@@ -605,6 +723,7 @@ async function placePage(id, parentId, index) {
     if (oldParent !== nextParent) await writeOrder(childrenOf(oldParent));
     renderTree();
     statusEl.textContent = '已调整顺序';
+    syncAddress();
 }
 
 async function movePage(id, parentId) {
@@ -643,6 +762,7 @@ async function flushSave() {
     statusEl.textContent = '已保存';
     renameHistory(saved.id, saved.title || title);
     renderTree();
+    syncAddress();
 }
 
 function blocksOf(html) {
@@ -793,8 +913,101 @@ function foldAll() {
     renderTree();
 }
 
+function pathParts() {
+    let path = location.pathname || '/';
+    try { path = decodeURIComponent(path); } catch (e) {}
+    return path.split('/').filter(Boolean);
+}
+
 function currentHomePath() {
-    return decodeURIComponent(location.pathname).replace(/^\/+|\/+$/g, '') || 'rbWiki';
+    return pathParts()[0] || 'rbWiki';
+}
+
+function pathTitle(page) {
+    const title = String((page && page.title) || '未命名').trim().replace(/[\\/#?]+/g, '／').replace(/\s+/g, ' ') || '未命名';
+    return [...title].slice(0, 80).join('');
+}
+
+function pathSegment(page) {
+    const title = pathTitle(page);
+    const same = pages.filter((item) => item && !item.deletedAt && (item.parentId || null) === (page.parentId || null) && pathTitle(item) === title);
+    if (same.length < 2) return title;
+    return title + '-' + String(page.id || '').slice(0, 8);
+}
+
+function findChildBySegment(parentId, segment) {
+    const kids = pages.filter((item) => item && !item.deletedAt && (item.parentId || null) === (parentId || null));
+    const exact = kids.filter((item) => pathTitle(item) === segment || pathSegment(item) === segment);
+    if (exact.length === 1) return exact[0];
+    const mark = String(segment || '').match(/^(.*)-([0-9a-f]{8})$/i);
+    if (mark) {
+        const hit = kids.find((item) => pathTitle(item) === mark[1] && String(item.id || '').toLowerCase().startsWith(mark[2].toLowerCase()));
+        if (hit) return hit;
+    }
+    return exact[0] || null;
+}
+
+function pageIdFromPath() {
+    const parts = pathParts();
+    if (parts.length < 2) return '';
+    let parentId = null;
+    let page = null;
+    for (const segment of parts.slice(1)) {
+        page = findChildBySegment(parentId, segment);
+        if (!page) return '';
+        parentId = page.id;
+    }
+    return page ? page.id : '';
+}
+
+function ancestorPages(page) {
+    const chain = [];
+    let cur = page;
+    const seen = new Set();
+    while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        chain.unshift(cur);
+        if (!cur.parentId) break;
+        cur = pages.find((item) => item.id === cur.parentId && !item.deletedAt) || null;
+    }
+    return chain;
+}
+
+function locationFor(page, keepHash) {
+    const home = '/' + encodeURIComponent(currentHomePath());
+    let path = home;
+    if (page) path += '/' + ancestorPages(page).map((item) => encodeURIComponent(pathSegment(item))).join('/');
+    let hash = '';
+    if (keepHash && page && location.hash) hash = location.hash;
+    return path + location.search + hash;
+}
+
+function sameLocation(url) {
+    const next = new URL(url, location.origin);
+    const decode = (value) => {
+        try { return decodeURIComponent(value); } catch (e) { return value; }
+    };
+    return decode(next.pathname) === decode(location.pathname) && next.search === location.search && decode(next.hash) === decode(location.hash);
+}
+
+function syncAddress() {
+    if (suspendLocation || !addressReady || vaultSealed()) {
+        locationPush = false;
+        return;
+    }
+    const page = (!trashMode && viewMode === 'lib') ? pages.find((item) => item.id === currentId && !item.deletedAt) : null;
+    const keepHash = !!(page && location.hash && (addressPageId === page.id || !addressStarted));
+    const url = locationFor(page, keepHash);
+    addressStarted = true;
+    addressPageId = page ? page.id : null;
+    if (sameLocation(url)) {
+        locationPush = false;
+        return;
+    }
+    const state = { rbw: page ? page.id : null };
+    if (locationPush) history.pushState(state, '', url);
+    else history.replaceState(state, '', url);
+    locationPush = false;
 }
 
 function randomHomePath() {
@@ -822,7 +1035,7 @@ async function submitUnlock(password, code) {
     document.getElementById('seal-pw').value = '';
     document.getElementById('seal-code').value = '';
     await refreshAuth();
-    if (!vaultSealed()) await load(sessionStorage.getItem('rbw-page') || currentId);
+    if (!vaultSealed()) await load(currentId, { fromPath: !currentId });
     return { ok: true, data };
 }
 
@@ -851,7 +1064,9 @@ document.getElementById('copy-link').addEventListener('click', (event) => {
 });
 
 function currentPageLink() {
-    return location.origin + location.pathname + location.search + '#' + currentId;
+    const page = pages.find((item) => item.id === currentId && !item.deletedAt);
+    if (!page || trashMode) return location.origin + '/' + encodeURIComponent(currentHomePath());
+    return location.origin + locationFor(page, false);
 }
 
 async function shareCurrentLink() {
@@ -1173,6 +1388,7 @@ let fileSort = 'time';
 
 async function setView(mode) {
     if (viewMode === mode && mode !== 'files') return;
+    locationPush = true;
     viewMode = mode;
     trashMode = mode === 'trash';
     document.getElementById('mode-lib').classList.toggle('on', mode === 'lib');
@@ -1183,6 +1399,7 @@ async function setView(mode) {
     applyLock();
     if (mode === 'files') {
         await loadFiles();
+        syncAddress();
         return;
     }
     if (mode === 'trash') trashFolded = false;
@@ -1284,6 +1501,7 @@ async function openReferencedPage(page) {
     document.getElementById('files').classList.add('hidden');
     if (trashMode) trashFolded = false;
     applyLock();
+    locationPush = true;
     await load(page.id);
 }
 
@@ -1704,11 +1922,27 @@ document.addEventListener('keydown', (e) => {
         return;
     }
     if (e.key === 'Escape') {
+        const settings = document.getElementById('settings');
+        const importer = document.getElementById('import-dialog');
+        const busy = (settings && !settings.classList.contains('hidden'))
+            || (importer && !importer.classList.contains('hidden'))
+            || !finderEl.classList.contains('hidden')
+            || !document.getElementById('lightbox').classList.contains('hidden')
+            || document.getElementById('link-input-bar')
+            || !menuEl.classList.contains('hidden')
+            || document.querySelector('.float-menu, .emoji-panel, .wiki-suggest');
+        if (settings && !settings.classList.contains('hidden')) closeSettings();
+        if (importer && !importer.classList.contains('hidden')) importer.classList.add('hidden');
         closeFinder();
         closeMenu();
         closeLinkBar(false);
         closeFloatMenus();
         closeLightbox();
+        if (busy) return;
+        if (currentId && !pageEl.classList.contains('hidden')) {
+            e.preventDefault();
+            showHome();
+        }
         return;
     }
     if (finderEl.classList.contains('hidden')) return;
@@ -2191,8 +2425,9 @@ function removeHeading(heading, section) {
 
 function headingLink(heading) {
     const hid = heading && heading.dataset.hid;
-    if (!hid || !currentId) return '';
-    return location.origin + location.pathname + location.search + '#' + currentId + '/' + encodeURIComponent(hid);
+    const page = pages.find((item) => item.id === currentId && !item.deletedAt);
+    if (!hid || !page || trashMode) return '';
+    return location.origin + locationFor(page, false) + '#' + encodeURIComponent(hid);
 }
 
 function scrollToHeading(hid) {
@@ -2204,15 +2439,37 @@ function scrollToHeading(hid) {
 }
 
 async function followHeadingLink() {
-    const raw = decodeURIComponent(location.hash.replace(/^#/, ''));
+    let raw = location.hash.replace(/^#/, '');
+    if (!raw) return;
+    try { raw = decodeURIComponent(raw); } catch (e) {}
     const slash = raw.indexOf('/');
-    if (slash < 0) return;
-    const id = raw.slice(0, slash);
-    const hid = raw.slice(slash + 1);
-    if (!/^[0-9a-f-]{36}$/i.test(id)) return;
-    if (currentId !== id) await openPage(id);
-    else decorateHeadings();
-    scrollToHeading(hid);
+    if (slash > 0 && /^[0-9a-f-]{36}$/i.test(raw.slice(0, slash))) {
+        const id = raw.slice(0, slash);
+        const hid = raw.slice(slash + 1);
+        if (currentId !== id) {
+            suspendLocation = true;
+            try { await openPage(id); } finally { suspendLocation = false; }
+        } else decorateHeadings();
+        scrollToHeading(hid);
+        const page = pages.find((item) => item.id === currentId && !item.deletedAt);
+        if (page && !trashMode) {
+            history.replaceState({ rbw: page.id }, '', locationFor(page, false) + '#' + encodeURIComponent(hid));
+            addressPageId = page.id;
+            addressStarted = true;
+        }
+        return;
+    }
+    if (/^[0-9a-f-]{36}$/i.test(raw)) {
+        const page = pages.find((item) => item.id === raw && !item.deletedAt);
+        if (page && !trashMode) {
+            history.replaceState({ rbw: page.id }, '', locationFor(page, false));
+            addressPageId = page.id;
+            addressStarted = true;
+        }
+        return;
+    }
+    decorateHeadings();
+    scrollToHeading(raw);
 }
 
 function placeCaret(el) {
@@ -2970,6 +3227,57 @@ function openEmojiPicker() {
     }, 0);
 }
 
+function normalizeCodeBlocks() {
+    editorEl.querySelectorAll('.code-block').forEach((block) => {
+        block.removeAttribute('contenteditable');
+        const pre = block.querySelector('pre');
+        if (pre) {
+            pre.removeAttribute('contenteditable');
+            if (!pre.firstChild) pre.appendChild(document.createElement('br'));
+        }
+        const bar = block.querySelector('.code-bar');
+        if (bar) bar.setAttribute('contenteditable', 'false');
+    });
+}
+
+let removedCodeStack = [];
+
+function focusCodePre(pre) {
+    if (!pre) return;
+    if (!pre.firstChild) pre.appendChild(document.createElement('br'));
+    pre.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(pre);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+}
+
+function removeBlockUndo(node) {
+    if (!node || !node.isConnected) return;
+    removedCodeStack.push({ html: node.outerHTML, next: node.nextSibling });
+    node.remove();
+}
+
+document.addEventListener('keydown', (event) => {
+    if (!removedCodeStack.length || !editorWritable()) return;
+    if (!((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const item = removedCodeStack.pop();
+    const holder = document.createElement('div');
+    holder.innerHTML = item.html;
+    const block = holder.firstElementChild;
+    if (!block) return;
+    const next = item.next && item.next.parentNode === editorEl ? item.next : null;
+    editorEl.insertBefore(block, next);
+    normalizeCodeBlocks();
+    const pre = block.querySelector('pre');
+    if (pre && !pre.firstChild) pre.appendChild(document.createElement('br'));
+    scheduleSave();
+}, true);
+
 function insertCodeBlock() {
     if (!editorWritable()) return;
     restoreRange();
@@ -2978,27 +3286,48 @@ function insertCodeBlock() {
     const inside = anchorEl && anchorEl.closest('.code-block');
     if (inside && editorEl.contains(inside)) {
         const text = inside.querySelector('pre')?.innerText || '';
-        inside.outerHTML = linesToHtml(text.replace(/\n$/, '')) || '<div><br></div>';
+        const html = linesToHtml(text.replace(/\n$/, '')) || '<div><br></div>';
+        const range = document.createRange();
+        range.selectNode(inside);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('insertHTML', false, html);
+        if (inside.isConnected) inside.outerHTML = html;
         scheduleSave();
         return;
     }
     const text = sel.toString();
     const block = document.createElement('div');
     block.className = 'code-block';
-    block.contentEditable = 'false';
-    block.innerHTML = '<div class="code-bar" contenteditable="false"><button type="button" data-act="copy">复制</button><button type="button" data-act="remove">删除</button></div><pre contenteditable="true"></pre>';
-    block.querySelector('pre').textContent = text;
-    if (sel.rangeCount) {
+    block.innerHTML = '<div class="code-bar" contenteditable="false"><button type="button" data-act="copy">复制</button><button type="button" data-act="remove">删除</button></div><pre></pre>';
+    const pre = block.querySelector('pre');
+    if (text) pre.textContent = text;
+    else pre.appendChild(document.createElement('br'));
+    let line = null;
+    if (sel.rangeCount && editorEl.contains(sel.anchorNode)) line = getLineNode(sel);
+    if (line && line.parentNode === editorEl && line !== editorEl && !(line.classList && line.classList.contains('code-block'))) {
+        const blank = !(line.textContent || '').replace(/\u00a0/g, '').trim() && !line.querySelector('img');
+        if (blank) line.replaceWith(block);
+        else line.after(block);
+    } else if (sel.rangeCount && editorEl.contains(sel.anchorNode)) {
         const range = sel.getRangeAt(0);
         range.deleteContents();
         range.insertNode(block);
-        const after = document.createElement('div');
-        after.appendChild(document.createElement('br'));
-        block.after(after);
+        if (block.parentNode !== editorEl) {
+            const parent = block.parentNode;
+            parent.after(block);
+            if (parent !== editorEl && !(parent.textContent || '').trim()) parent.remove();
+        }
     } else {
         editorEl.appendChild(block);
     }
-    block.querySelector('pre').focus();
+    const next = block.nextElementSibling;
+    if (!next || next.classList.contains('code-block')) {
+        const after = document.createElement('div');
+        after.appendChild(document.createElement('br'));
+        block.after(after);
+    }
+    focusCodePre(pre);
     scheduleSave();
 }
 
@@ -3613,6 +3942,12 @@ editorEl.addEventListener('compositionend', () => {
 });
 editorEl.addEventListener('input', (event) => {
     if (editorComposing || event.isComposing) return;
+    const from = event.target;
+    if (from && from.closest && from.closest('.code-block')) {
+        removedCodeStack.length = 0;
+        return;
+    }
+    removedCodeStack.length = 0;
     normalizeLooseLines();
     wrapBareCheckboxes();
     decorateHeadings();
@@ -3628,12 +3963,23 @@ editorEl.addEventListener('click', (event) => {
         statusEl.textContent = '已复制标题链接';
         return;
     }
+    const code = event.target.closest && event.target.closest('.code-block');
+    if (code && editorEl.contains(code) && !(event.target.closest && event.target.closest('[data-act]'))) {
+        const pre = code.querySelector('pre');
+        if (pre && !pre.contains(event.target)) {
+            event.preventDefault();
+            focusCodePre(pre);
+        } else if (pre && !(pre.textContent || '').length) {
+            focusCodePre(pre);
+        }
+        return;
+    }
     const act = event.target.closest && event.target.closest('[data-act]');
     if (act && editorEl.contains(act)) {
         const block = act.closest('.code-block');
         if (act.dataset.act === 'copy') copyText(block.querySelector('pre').innerText);
         if (act.dataset.act === 'remove' && editorWritable()) {
-            block.remove();
+            removeBlockUndo(block);
             scheduleSave();
         }
         statusEl.textContent = act.dataset.act === 'copy' ? '已复制代码' : statusEl.textContent;
@@ -3835,6 +4181,17 @@ editorEl.addEventListener('keydown', (event) => {
             return;
         }
     }
+    const codeHost = event.target && event.target.closest && event.target.closest('.code-block');
+    if (codeHost && editorEl.contains(codeHost)) {
+        if (event.key === 'Enter' && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
+            event.preventDefault();
+            document.execCommand('insertText', false, '\n');
+        } else if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey) {
+            event.preventDefault();
+            if (!event.shiftKey) document.execCommand('insertText', false, '    ');
+        }
+        return;
+    }
     if ((event.metaKey || event.ctrlKey) && !event.altKey && (event.key.toLowerCase() === 'l' || event.key.toLowerCase() === 'k') && !event.shiftKey) {
         event.preventDefault();
         insertLink();
@@ -3890,6 +4247,28 @@ editorEl.addEventListener('keydown', (event) => {
         const line = sel && sel.rangeCount ? getLineNode(sel) : null;
         if (line && /^H[1-4]$/.test(line.tagName)) {
             event.preventDefault();
+            if (sel.isCollapsed && caretAtBlockStart(line, sel)) {
+                const range = document.createRange();
+                range.setStartBefore(line);
+                range.collapse(true);
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.execCommand('insertHTML', false, '<div><br></div>');
+                const prev = line.previousElementSibling;
+                if (!prev || (prev.textContent || '').replace(/\u00a0/g, '').trim()) {
+                    const blank = document.createElement('div');
+                    blank.innerHTML = '<br>';
+                    line.before(blank);
+                    const caret = document.createRange();
+                    caret.setStart(blank, 0);
+                    caret.collapse(true);
+                    sel.removeAllRanges();
+                    sel.addRange(caret);
+                }
+                decorateHeadings();
+                scheduleSave();
+                return;
+            }
             const after = document.createElement('div');
             const tail = document.createRange();
             tail.setStart(sel.anchorNode, sel.anchorOffset);
@@ -4034,7 +4413,37 @@ if (localStorage.getItem('rbw-side') === 'closed') setSide(false);
 
 refreshAuth().then(async () => {
     if (vaultSealed()) return;
-    await load(currentId);
+    await load(currentId, { fromPath: !currentId });
     await followHeadingLink();
 });
 window.addEventListener('hashchange', () => { followHeadingLink(); });
+window.addEventListener('popstate', async () => {
+    suspendLocation = true;
+    try {
+        if (viewMode !== 'lib' || trashMode) {
+            viewMode = 'lib';
+            trashMode = false;
+            document.getElementById('mode-lib').classList.add('on');
+            document.getElementById('mode-trash').classList.remove('on');
+            document.getElementById('mode-files').classList.remove('on');
+            document.body.classList.remove('files-mode');
+            document.getElementById('files').classList.add('hidden');
+            const listed = await fetch('/api/pages');
+            if (listed.ok) {
+                pages = await listed.json();
+                addressReady = true;
+            }
+            applyLock();
+        }
+        const id = pageIdFromHash() || pageIdFromPath();
+        if (!id) {
+            currentId = null;
+            showCurrent();
+            return;
+        }
+        if (currentId !== id) await openPage(id);
+        await followHeadingLink();
+    } finally {
+        suspendLocation = false;
+    }
+});
