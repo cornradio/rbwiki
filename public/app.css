@@ -649,6 +649,20 @@ body.files-mode #trash-banner { display: none !important; }
     color: var(--ink) !important;
     -webkit-text-fill-color: var(--ink) !important;
 }
+.editor .hl-live {
+    outline: 1px dashed var(--accent);
+    outline-offset: 1px;
+}
+.editor .hl-live.bg {
+    background-color: var(--hl) !important;
+    border-radius: 2px;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+}
+.editor .hl-live.bg::selection {
+    background-color: var(--hl);
+    color: inherit;
+}
 .editor a { color: var(--accent); }
 .editor a.file-link {
     text-decoration-line: underline;

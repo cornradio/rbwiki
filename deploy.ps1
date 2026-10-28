@@ -38,22 +38,16 @@ export NVM_DIR="$HOME/.nvm"
 . "$NVM_DIR/nvm.sh"
 cd /home/kasusa/rbwiki
 npm ci --omit=dev
-cat > /home/kasusa/rbwiki/start.sh << "EOF"
-#!/bin/bash
-cd /home/kasusa/rbwiki
-export NVM_DIR="$HOME/.nvm"
-. "$NVM_DIR/nvm.sh"
-exec node server.js
-EOF
-chmod +x /home/kasusa/rbwiki/start.sh
-screen -S rbwiki -X quit >/dev/null 2>&1 || true
-sleep 1
-screen -dmS rbwiki /home/kasusa/rbwiki/start.sh
+if sudo -n /usr/local/sbin/saferun restart rbwiki; then
+  :
+else
+  docker run --rm --privileged --pid host -v /:/host kasusa/lan-clip:latest chroot /host /usr/local/sbin/saferun restart rbwiki
+fi
 sleep 1
 code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3010/rbWiki)
 echo "rbWiki $code"
 test "$code" = "200"
-screen -ls | grep rbwiki
+/usr/local/sbin/saferun status | awk 'BEGIN{p=0} $1=="rbwiki"{p=1} p{print} p && /^[^ ]/ && $1!="rbwiki"{exit}'
 '@
 $remoteUpdate = $remoteUpdate -replace "`r`n", "`n" -replace "`r", "`n"
 [System.IO.File]::WriteAllText($RemoteScript, $remoteUpdate)

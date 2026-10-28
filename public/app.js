@@ -2820,6 +2820,24 @@ function linkTargetText(anchor) {
     return anchor.getAttribute('href') || '';
 }
 
+function downloadAttachment(link) {
+    const href = link.href || link.getAttribute('href') || '';
+    if (!href) return;
+    const label = (link.textContent || '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+    let fallback = '附件';
+    try {
+        fallback = decodeURIComponent(href.split('/').pop().split('?')[0] || fallback);
+    } catch (e) {}
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = label || fallback;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    statusEl.textContent = '开始下载';
+}
+
 function followEditorLink(link) {
     const href = link.getAttribute('href') || '';
     if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
@@ -3297,29 +3315,34 @@ function insertCodeBlock() {
         return;
     }
     const text = sel.toString();
+    const selected = sel.rangeCount && !sel.getRangeAt(0).collapsed && editorEl.contains(sel.anchorNode);
     const block = document.createElement('div');
     block.className = 'code-block';
     block.innerHTML = '<div class="code-bar" contenteditable="false"><button type="button" data-act="copy">复制</button><button type="button" data-act="remove">删除</button></div><pre></pre>';
     const pre = block.querySelector('pre');
     if (text) pre.textContent = text;
     else pre.appendChild(document.createElement('br'));
-    let line = null;
-    if (sel.rangeCount && editorEl.contains(sel.anchorNode)) line = getLineNode(sel);
-    if (line && line.parentNode === editorEl && line !== editorEl && !(line.classList && line.classList.contains('code-block'))) {
-        const blank = !(line.textContent || '').replace(/\u00a0/g, '').trim() && !line.querySelector('img');
-        if (blank) line.replaceWith(block);
-        else line.after(block);
-    } else if (sel.rangeCount && editorEl.contains(sel.anchorNode)) {
+    if (selected) {
         const range = sel.getRangeAt(0);
         range.deleteContents();
         range.insertNode(block);
         if (block.parentNode !== editorEl) {
             const parent = block.parentNode;
             parent.after(block);
-            if (parent !== editorEl && !(parent.textContent || '').trim()) parent.remove();
+            if (parent !== editorEl && !(parent.textContent || '').replace(/\u00a0/g, '').trim() && !parent.querySelector('img')) parent.remove();
         }
+        const husk = block.nextElementSibling;
+        if (husk && husk.tagName === 'DIV' && !husk.classList.contains('code-block') && !(husk.textContent || '').replace(/\u00a0/g, '').trim() && !husk.querySelector('img')) husk.remove();
     } else {
-        editorEl.appendChild(block);
+        let line = null;
+        if (sel.rangeCount && editorEl.contains(sel.anchorNode)) line = getLineNode(sel);
+        if (line && line.parentNode === editorEl && line !== editorEl && !(line.classList && line.classList.contains('code-block'))) {
+            const blank = !(line.textContent || '').replace(/\u00a0/g, '').trim() && !line.querySelector('img');
+            if (blank) line.replaceWith(block);
+            else line.after(block);
+        } else {
+            editorEl.appendChild(block);
+        }
     }
     const next = block.nextElementSibling;
     if (!next || next.classList.contains('code-block')) {
@@ -3419,7 +3442,6 @@ document.getElementById('tb-color').addEventListener('input', (event) => {
     dragStyle('color', event.target.value);
     document.getElementById('tb-color-label').style.color = event.target.value;
     localStorage.setItem('rbw-last-color', event.target.value);
-    scheduleSave();
 });
 document.getElementById('tb-color').addEventListener('change', () => finishStyleDrag('color'));
 document.getElementById('tb-color-label').addEventListener('contextmenu', (event) => {
@@ -3518,6 +3540,17 @@ function selectedTextNodes(range) {
     });
 }
 
+function inkForBackground(color) {
+    const raw = String(color || '').trim();
+    const hex = raw.startsWith('#') ? raw.slice(1) : '';
+    const full = hex.length === 3 ? hex.split('').map((ch) => ch + ch).join('') : hex;
+    if (!/^[0-9a-f]{6}$/i.test(full)) return '#1c1915';
+    const r = parseInt(full.slice(0, 2), 16);
+    const g = parseInt(full.slice(2, 4), 16);
+    const b = parseInt(full.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#1c1915' : '#fffdf8';
+}
+
 function htmlForStyle(range, kind, color) {
     const inks = selectedTextNodes(range).map((node) => visibleInk(node));
     const frag = range.cloneContents();
@@ -3529,12 +3562,13 @@ function htmlForStyle(range, kind, color) {
     }
     clones.forEach((node, index) => {
         const span = document.createElement('span');
-        span.className = 'hl-live';
+        span.className = kind === 'bg' ? 'hl-live bg' : 'hl-live';
         if (kind === 'bg') {
+            span.style.setProperty('--hl', color);
             span.style.backgroundColor = color;
-            span.style.setProperty('--ink', inks[index] || getComputedStyle(editorEl).color);
+            span.style.setProperty('--ink', inkForBackground(color));
         } else {
-            span.style.setProperty('--ink', color);
+            span.style.setProperty('--ink', color || inks[index] || getComputedStyle(editorEl).color);
         }
         node.parentNode.insertBefore(span, node);
         span.appendChild(node);
@@ -3546,8 +3580,14 @@ function htmlForStyle(range, kind, color) {
 
 function paintLiveStyle(kind, color) {
     editorEl.querySelectorAll('.hl-live').forEach((span) => {
-        if (kind === 'bg') span.style.backgroundColor = color;
-        else span.style.setProperty('--ink', color);
+        if (kind === 'bg') {
+            span.classList.add('bg');
+            span.style.setProperty('--hl', color);
+            span.style.backgroundColor = color;
+            span.style.setProperty('--ink', inkForBackground(color));
+        } else {
+            span.style.setProperty('--ink', color);
+        }
     });
 }
 
@@ -3581,65 +3621,61 @@ function applyStyleOnce(kind, color) {
     if (html && document.execCommand('insertHTML', false, html)) sealLiveInk();
 }
 
+function editorRange() {
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && editorEl.contains(sel.anchorNode)) return sel.getRangeAt(0).cloneRange();
+    if (savedRange && editorEl.contains(savedRange.startContainer)) return savedRange.cloneRange();
+    return null;
+}
+
+function restoreStyleSnapshot(drag) {
+    const nodes = (drag.nodes || []).filter((node) => node.isConnected);
+    const parent = nodes[0] && nodes[0].parentNode;
+    const after = nodes.length ? nodes[nodes.length - 1].nextSibling : null;
+    nodes.forEach((node) => node.remove());
+    if (parent && drag.snapshot) parent.insertBefore(drag.snapshot, after);
+}
+
 function dragStyle(kind, color) {
-    if (styleDrag && styleDrag.kind === kind && !styleDrag.cancelled) {
+    if (styleDrag && styleDrag.kind === kind && !styleDrag.cancelled && !styleDrag.collapsed) {
         styleDrag.color = color;
         styleDrag.dirty = true;
         paintLiveStyle(kind, color);
         return;
     }
-    restoreRange();
-    const sel = window.getSelection();
-    if (!sel || !sel.rangeCount) return;
-    const range = sel.getRangeAt(0).cloneRange();
-    const mark = bookmarkRange(range);
-    document.execCommand('styleWithCSS', false, true);
-    let steps = 0;
+    const range = editorRange();
+    if (!range) return;
     if (range.collapsed) {
-        if (kind === 'bg') {
-            if (document.execCommand('foreColor', false, getComputedStyle(editorEl).color)) steps += 1;
-            if (document.execCommand('hiliteColor', false, color)) steps += 1;
-        } else if (document.execCommand('foreColor', false, color)) {
-            steps += 1;
-        }
-    } else {
-        const html = htmlForStyle(range, kind, color);
-        if (html && document.execCommand('insertHTML', false, html)) steps = 1;
+        styleDrag = { kind, color, collapsed: true, mark: bookmarkRange(range), dirty: true, cancelled: false };
+        return;
     }
-    styleDrag = { kind, color, mark, steps, dirty: false, cancelled: false };
+    const snapshot = range.cloneContents();
+    const html = htmlForStyle(range, kind, color);
+    if (!html) return;
+    range.deleteContents();
+    const marker = document.createTextNode('');
+    range.insertNode(marker);
+    const holder = document.createElement('template');
+    holder.innerHTML = html;
+    const nodes = [...holder.content.childNodes];
+    marker.before(holder.content);
+    marker.remove();
+    const sel = window.getSelection();
+    if (sel) sel.removeAllRanges();
+    styleDrag = { kind, color, collapsed: false, nodes, snapshot, dirty: true, cancelled: false };
 }
 
 function finishStyleDrag(kind) {
     const drag = styleDrag;
     if (!drag || drag.kind !== kind) return;
     styleDrag = null;
-    if (drag.cancelled || !drag.dirty || !drag.steps) {
-        sealLiveInk();
+    if (drag.collapsed) {
+        if (!drag.cancelled && selectBookmark(drag.mark)) applyStyleOnce(kind, drag.color);
         scheduleSave();
         return;
     }
-    editorEl.focus();
-    for (let i = 0; i < drag.steps; i++) document.execCommand('undo');
-    if (!selectBookmark(drag.mark)) {
-        scheduleSave();
-        return;
-    }
-    const sel = window.getSelection();
-    if (!sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    document.execCommand('styleWithCSS', false, true);
-    if (range.collapsed) {
-        if (kind === 'bg') {
-            document.execCommand('foreColor', false, getComputedStyle(editorEl).color);
-            document.execCommand('hiliteColor', false, drag.color);
-        } else {
-            document.execCommand('foreColor', false, drag.color);
-        }
-        scheduleSave();
-        return;
-    }
-    const html = htmlForStyle(range, kind, drag.color);
-    if (html && document.execCommand('insertHTML', false, html)) sealLiveInk();
+    if (drag.cancelled) restoreStyleSnapshot(drag);
+    else sealLiveInk();
     scheduleSave();
 }
 
@@ -3653,7 +3689,6 @@ document.getElementById('tb-bg').addEventListener('input', (event) => {
     document.getElementById('tb-bg-label').style.background = event.target.value;
     localStorage.setItem('rbw-last-bg', event.target.value);
     dragStyle('bg', event.target.value);
-    scheduleSave();
 });
 document.getElementById('tb-bg').addEventListener('change', () => finishStyleDrag('bg'));
 document.getElementById('tb-bg-label').addEventListener('contextmenu', (event) => {
@@ -4066,6 +4101,10 @@ editorEl.addEventListener('contextmenu', (event) => {
         ];
         if (link.classList.contains('file-link') || href.startsWith('/uploads/')) {
             items.push({
+                label: '下载附件',
+                onClick: () => downloadAttachment(link)
+            });
+            items.push({
                 label: '删除附件',
                 danger: true,
                 onClick: async () => {
@@ -4079,15 +4118,16 @@ editorEl.addEventListener('contextmenu', (event) => {
                     statusEl.textContent = '附件已删除';
                 }
             });
+        } else {
+            items.push({
+                label: '只去掉链接',
+                onClick: () => {
+                    link.replaceWith(document.createTextNode(link.textContent));
+                    scheduleSave();
+                    statusEl.textContent = '链接已去掉，文件还在';
+                }
+            });
         }
-        items.push({
-            label: '只去掉链接',
-            onClick: () => {
-                link.replaceWith(document.createTextNode(link.textContent));
-                scheduleSave();
-                statusEl.textContent = '链接已去掉，文件还在';
-            }
-        });
         showFloatMenu(event.clientX, event.clientY, items, link);
         return;
     }
